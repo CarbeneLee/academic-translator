@@ -1,0 +1,31 @@
+# Visual brainstorming artifacts
+.superpowers/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# JavaScript / TypeScript
+node_modules/
+dist/
+coverage/
+.vite/
+
+# Rust / Tauri
+target/
+src-tauri/target/
+
+# Local databases and logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
