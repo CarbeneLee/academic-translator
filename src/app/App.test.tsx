@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { App } from "./App";
 
-test("renders only the approved shell regions and translation-panel control", () => {
+test("renders the approved shell regions and functional PDF controls", () => {
   render(<App />);
 
   expect(screen.getByRole("toolbar", { name: "论文阅读工具" })).toBeVisible();
@@ -11,9 +11,9 @@ test("renders only the approved shell regions and translation-panel control", ()
   expect(screen.getByRole("status", { name: "阅读状态" })).toBeVisible();
 
   expect(screen.getByRole("button", { name: "收起翻译面板" })).toBeVisible();
-  expect(screen.getAllByRole("button")).toHaveLength(1);
+  expect(screen.getByRole("button", { name: "打开 PDF" })).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: /打开 PDF|缩小|放大|设置|阅读模式/ }),
+    screen.queryByRole("button", { name: /设置|阅读模式/ }),
   ).not.toBeInTheDocument();
   expect(screen.queryByText(/聊天|笔记|OCR/)).not.toBeInTheDocument();
 });

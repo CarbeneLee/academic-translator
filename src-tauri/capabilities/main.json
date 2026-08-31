@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-capability",
-  "description": "Minimal permissions for the Academic Translator main window.",
+  "description": "Main-window access to core APIs and app-owned document commands; native file dialogs remain Rust-owned.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

@@ -1,22 +1,28 @@
 import { useState } from "react";
+import {
+  PdfDocumentToolbar,
+  PdfWorkspace,
+  usePdfWorkspaceController,
+} from "../features/pdf-viewer/PdfWorkspace";
 import "./App.css";
 
 export function App() {
   const [isTranslationPanelCollapsed, setIsTranslationPanelCollapsed] =
     useState(false);
+  const pdfWorkspace = usePdfWorkspaceController();
 
   return (
     <div
       className={`appShell${isTranslationPanelCollapsed ? " appShell--panelCollapsed" : ""}`}
     >
-      <header className="topToolbar" role="toolbar" aria-label="论文阅读工具" />
+      <header className="topToolbar" role="toolbar" aria-label="论文阅读工具">
+        <PdfDocumentToolbar controller={pdfWorkspace} />
+      </header>
 
       <nav className="toolRail" aria-label="PDF 工具栏" />
 
       <main className="pdfWorkspace" aria-label="PDF 阅读区">
-        <div className="emptyDocumentState">
-          <p>打开本地 PDF 开始阅读</p>
-        </div>
+        <PdfWorkspace controller={pdfWorkspace} />
       </main>
 
       <aside
@@ -43,7 +49,7 @@ export function App() {
 
       <div id="settings-dialog-root" className="settingsDialogRoot" />
       <footer className="statusBar" role="status" aria-label="阅读状态">
-        准备就绪
+        {pdfWorkspace.status}
       </footer>
     </div>
   );
