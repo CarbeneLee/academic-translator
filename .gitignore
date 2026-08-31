@@ -14,10 +14,12 @@ node_modules/
 dist/
 coverage/
 .vite/
+*.tsbuildinfo
 
 # Rust / Tauri
 target/
 src-tauri/target/
+src-tauri/gen/
 
 # Local databases and logs
 *.db
