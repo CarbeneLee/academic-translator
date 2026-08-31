@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod document;
 pub mod errors;
+pub mod translation;
 
 pub fn run() {
     tauri::Builder::default()

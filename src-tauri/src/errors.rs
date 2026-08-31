@@ -1,4 +1,25 @@
 use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum TranslationDomainError {
+    #[error("selection is empty")]
+    SelectionEmpty,
+    #[error("selection exceeds the local character limit")]
+    SelectionTooLarge,
+    #[error("cache identity could not be serialized")]
+    CacheKeySerialization(#[from] serde_json::Error),
+}
+
+impl TranslationDomainError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::SelectionEmpty => "SELECTION_EMPTY",
+            Self::SelectionTooLarge => "SELECTION_TOO_LARGE",
+            Self::CacheKeySerialization(_) => "CACHE_UNAVAILABLE",
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
