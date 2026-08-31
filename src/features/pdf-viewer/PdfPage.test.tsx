@@ -5,7 +5,7 @@ vi.mock("pdfjs-dist", () => ({
   TextLayer: class {},
 }));
 
-function textItem(str: string): TextItem {
+function textItem(str: string, hasEOL = false): TextItem {
   return {
     str,
     dir: "ltr",
@@ -13,7 +13,7 @@ function textItem(str: string): TextItem {
     width: str.length,
     height: 12,
     fontName: "sans",
-    hasEOL: false,
+    hasEOL,
   };
 }
 
@@ -47,6 +47,30 @@ test("preserves original text-item indices when empty items render no span", () 
 
   expect(textLayer.children[0]).toHaveAttribute("data-text-item-index", "0");
   expect(textLayer.children[1]).toHaveAttribute("data-text-item-index", "2");
+});
+
+test("records every PDF.js EOL item index including empty leading, middle, and trailing items", () => {
+  const textLayer = document.createElement("div");
+  textLayer.append(renderedSpan(), renderedSpan());
+
+  tagTextLayer(
+    0,
+    [
+      textItem("", true),
+      textItem("multi-"),
+      textItem("", true),
+      textItem("modal", true),
+      textItem("", true),
+    ],
+    textLayer,
+  );
+
+  expect(textLayer.children[0]).toHaveAttribute("data-text-item-index", "1");
+  expect(textLayer.children[1]).toHaveAttribute("data-text-item-index", "3");
+  expect(textLayer).toHaveAttribute(
+    "data-eol-after-item-indices",
+    "0,2,3,4",
+  );
 });
 
 test("marks selection unsupported instead of assigning unstable anchors", () => {

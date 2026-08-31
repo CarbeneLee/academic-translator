@@ -18,38 +18,24 @@ export type CaptureRangeOptions = {
   root: HTMLElement;
 };
 
-type TaggedEndpoint = {
-  span: HTMLElement;
-  pageIndex: number;
-  textItemIndex: number;
-  offset: number;
-};
-
 type SpanPiece = {
+  element: HTMLElement;
+  sessionOwner: HTMLElement;
   pageIndex: number;
   textItemIndex: number;
   startOffset: number;
   endOffset: number;
   text: string;
+  eolAfterItemIndices: number[];
 };
+
+const TAGGED_TEXT_SELECTOR = "[data-page-index][data-text-item-index]";
+const TEXT_LAYER_SELECTOR = "[data-page-index][data-document-session-id]";
 
 function unsupported(
   reason: UnsupportedSelectionReason,
 ): UnsupportedSelectionError {
   return { type: "unsupported-selection", reason };
-}
-
-function owningElement(node: Node): Element | null {
-  return node.nodeType === Node.ELEMENT_NODE
-    ? (node as Element)
-    : node.parentElement;
-}
-
-function documentSessionFor(node: Node, root: HTMLElement): string | undefined {
-  const sessionOwner = owningElement(node)?.closest<HTMLElement>(
-    "[data-document-session-id]",
-  );
-  return sessionOwner?.dataset.documentSessionId ?? root.dataset.documentSessionId;
 }
 
 function offsetWithinSpan(
@@ -69,53 +55,87 @@ function offsetWithinSpan(
   }
 }
 
-function taggedEndpoint(
+function validateBoundaryContainer(
   container: Node,
-  offset: number,
   root: HTMLElement,
-): TaggedEndpoint | UnsupportedSelectionError {
+): UnsupportedSelectionError | null {
   if (!root.contains(container)) {
     return unsupported("outside-pdf-root");
   }
 
-  const span = owningElement(container)?.closest<HTMLElement>(
-    "[data-page-index][data-text-item-index]",
-  );
-  if (!span || !root.contains(span)) {
+  if (container.nodeType === Node.TEXT_NODE) {
+    const span = container.parentElement?.closest<HTMLElement>(
+      TAGGED_TEXT_SELECTOR,
+    );
+    return span && root.contains(span) ? null : unsupported("untagged-text");
+  }
+
+  if (container.nodeType !== Node.ELEMENT_NODE) {
     return unsupported("untagged-text");
   }
 
-  const pageIndex = Number(span.dataset.pageIndex);
-  const textItemIndex = Number(span.dataset.textItemIndex);
-  const spanOffset = offsetWithinSpan(span, container, offset);
-  if (
-    !Number.isSafeInteger(pageIndex) ||
-    pageIndex < 0 ||
-    !Number.isSafeInteger(textItemIndex) ||
-    textItemIndex < 0 ||
-    spanOffset === null
-  ) {
-    return unsupported("untagged-text");
+  const element = container as Element;
+  const belongsToTextLayer = element.closest(TEXT_LAYER_SELECTOR);
+  const containsTaggedText = element.querySelector(TAGGED_TEXT_SELECTOR);
+  return element === root || belongsToTextLayer || containsTaggedText
+    ? null
+    : unsupported("untagged-text");
+}
+
+function parseEolIndices(textLayer: HTMLElement): number[] {
+  const encoded = textLayer.dataset.eolAfterItemIndices;
+  if (!encoded) {
+    return [];
   }
-
-  return { span, pageIndex, textItemIndex, offset: spanOffset };
+  return encoded.split(",").flatMap((value) => {
+    const index = Number(value);
+    return Number.isSafeInteger(index) && index >= 0 ? [index] : [];
+  });
 }
 
-function isUnsupported(
-  value: TaggedEndpoint | UnsupportedSelectionError,
-): value is UnsupportedSelectionError {
-  return "type" in value;
-}
-
-function selectedPiece(
+function intersectSelectedPiece(
+  range: Range,
   span: HTMLElement,
-  start: TaggedEndpoint,
-  end: TaggedEndpoint,
 ): SpanPiece | null {
-  const textLength = span.textContent?.length ?? 0;
-  const startOffset = span === start.span ? start.offset : 0;
-  const endOffset = span === end.span ? end.offset : textLength;
-  if (endOffset <= startOffset) {
+  if (!range.intersectsNode(span)) {
+    return null;
+  }
+
+  const sessionOwner = span.closest<HTMLElement>(TEXT_LAYER_SELECTOR);
+  if (!sessionOwner) {
+    return null;
+  }
+
+  const spanContents = document.createRange();
+  spanContents.selectNodeContents(span);
+  const intersection = document.createRange();
+  if (
+    range.compareBoundaryPoints(Range.START_TO_START, spanContents) > 0
+  ) {
+    intersection.setStart(range.startContainer, range.startOffset);
+  } else {
+    intersection.setStart(spanContents.startContainer, spanContents.startOffset);
+  }
+  if (range.compareBoundaryPoints(Range.END_TO_END, spanContents) < 0) {
+    intersection.setEnd(range.endContainer, range.endOffset);
+  } else {
+    intersection.setEnd(spanContents.endContainer, spanContents.endOffset);
+  }
+
+  const startOffset = offsetWithinSpan(
+    span,
+    intersection.startContainer,
+    intersection.startOffset,
+  );
+  const endOffset = offsetWithinSpan(
+    span,
+    intersection.endContainer,
+    intersection.endOffset,
+  );
+  const text = intersection.toString();
+  spanContents.detach();
+  intersection.detach();
+  if (startOffset === null || endOffset === null || text.length === 0) {
     return null;
   }
 
@@ -126,15 +146,38 @@ function selectedPiece(
   }
 
   return {
+    element: span,
+    sessionOwner,
     pageIndex,
     textItemIndex,
     startOffset,
     endOffset,
-    text: (span.textContent ?? "").slice(startOffset, endOffset),
+    text,
+    eolAfterItemIndices: parseEolIndices(sessionOwner),
   };
 }
+
+function crossedLineBreaks(
+  previous: SpanPiece,
+  current: SpanPiece,
+): string {
+  if (
+    previous.pageIndex !== current.pageIndex ||
+    previous.sessionOwner !== current.sessionOwner
+  ) {
+    return "";
+  }
+
+  const count = previous.eolAfterItemIndices.filter(
+    (index) =>
+      index >= previous.textItemIndex && index < current.textItemIndex,
+  ).length;
+  return "\n".repeat(count);
+}
+
 function toPageSpans(pieces: readonly SpanPiece[]): SelectionSpan[] {
   const spans: SelectionSpan[] = [];
+  let previousPiece: SpanPiece | undefined;
   for (const piece of pieces) {
     const previous = spans.at(-1);
     if (previous?.pageIndex === piece.pageIndex) {
@@ -142,7 +185,10 @@ function toPageSpans(pieces: readonly SpanPiece[]): SelectionSpan[] {
         textItemIndex: piece.textItemIndex,
         offset: piece.endOffset,
       };
-      previous.text += piece.text;
+      previous.text += previousPiece
+        ? crossedLineBreaks(previousPiece, piece) + piece.text
+        : piece.text;
+      previousPiece = piece;
       continue;
     }
 
@@ -159,6 +205,7 @@ function toPageSpans(pieces: readonly SpanPiece[]): SelectionSpan[] {
       },
       text: piece.text,
     });
+    previousPiece = piece;
   }
   return spans;
 }
@@ -171,43 +218,43 @@ export function captureRange(
     return unsupported("empty-selection");
   }
 
-  const start = taggedEndpoint(
+  const startBoundaryError = validateBoundaryContainer(
     range.startContainer,
-    range.startOffset,
     options.root,
   );
-  if (isUnsupported(start)) {
-    return start;
+  if (startBoundaryError) {
+    return startBoundaryError;
   }
-  const end = taggedEndpoint(range.endContainer, range.endOffset, options.root);
-  if (isUnsupported(end)) {
-    return end;
+  const endBoundaryError = validateBoundaryContainer(
+    range.endContainer,
+    options.root,
+  );
+  if (endBoundaryError) {
+    return endBoundaryError;
   }
 
   const rootSession = options.root.dataset.documentSessionId;
-  const startSession = documentSessionFor(range.startContainer, options.root);
-  const endSession = documentSessionFor(range.endContainer, options.root);
-  if (
-    (rootSession !== undefined && rootSession !== options.documentSessionId) ||
-    startSession !== options.documentSessionId ||
-    endSession !== options.documentSessionId ||
-    startSession !== endSession
-  ) {
+  if (rootSession !== options.documentSessionId) {
     return unsupported("mixed-document-session");
   }
 
   const taggedSpans = Array.from(
-    options.root.querySelectorAll<HTMLElement>(
-      "[data-page-index][data-text-item-index]",
-    ),
+    options.root.querySelectorAll<HTMLElement>(TAGGED_TEXT_SELECTOR),
   );
   const pieces = taggedSpans.flatMap((span) => {
-    if (!range.intersectsNode(span)) {
-      return [];
-    }
-    const piece = selectedPiece(span, start, end);
+    const piece = intersectSelectedPiece(range, span);
     return piece ? [piece] : [];
   });
+  if (
+    pieces.some(
+      (piece) =>
+        !options.root.contains(piece.element) ||
+        piece.sessionOwner.dataset.documentSessionId !==
+          options.documentSessionId,
+    )
+  ) {
+    return unsupported("mixed-document-session");
+  }
   const spans = toPageSpans(pieces);
   const text = spans.map((span) => span.text).join("\n");
   if (text.length === 0) {

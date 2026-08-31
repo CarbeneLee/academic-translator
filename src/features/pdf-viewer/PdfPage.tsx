@@ -29,6 +29,9 @@ export function tagTextLayer(
   } else {
     delete textLayer.dataset.documentSessionId;
   }
+  textLayer.dataset.eolAfterItemIndices = textItems
+    .flatMap((item, index) => (item.hasEOL ? [index] : []))
+    .join(",");
   const indexedItems = textItems
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => item.str.length > 0);
