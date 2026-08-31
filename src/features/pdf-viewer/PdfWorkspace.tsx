@@ -20,14 +20,62 @@ type PageRecord = {
   height: number;
 };
 
-async function disposeDocument(
-  descriptor: DocumentDescriptor,
+type OwnedDocument = {
+  descriptor: DocumentDescriptor;
+  handle: PdfDocumentHandle | null;
+  handleDestroyPromise: Promise<void> | null;
+  released: boolean;
+  sessionClosePromise: Promise<void> | null;
+};
+
+type OpenOperation = {
+  generation: number;
+  resources: OwnedDocument | null;
+};
+
+function ownDocument(descriptor: DocumentDescriptor): OwnedDocument {
+  return {
+    descriptor,
+    handle: null,
+    handleDestroyPromise: null,
+    released: false,
+    sessionClosePromise: null,
+  };
+}
+
+function closeOwnedSession(resources: OwnedDocument): Promise<void> {
+  resources.sessionClosePromise ??= closePdfDocument(
+    resources.descriptor.documentSessionId,
+  ).catch(() => undefined);
+  return resources.sessionClosePromise;
+}
+
+function destroyOwnedHandle(resources: OwnedDocument): Promise<void> {
+  if (!resources.handle) {
+    return Promise.resolve();
+  }
+  resources.handleDestroyPromise ??= resources.handle
+    .destroy()
+    .catch(() => undefined);
+  return resources.handleDestroyPromise;
+}
+
+async function releaseDocument(resources: OwnedDocument): Promise<void> {
+  resources.released = true;
+  await Promise.all([
+    closeOwnedSession(resources),
+    destroyOwnedHandle(resources),
+  ]);
+}
+
+async function attachHandle(
+  resources: OwnedDocument,
   handle: PdfDocumentHandle,
 ): Promise<void> {
-  await Promise.allSettled([
-    closePdfDocument(descriptor.documentSessionId),
-    handle.destroy(),
-  ]);
+  resources.handle = handle;
+  if (resources.released) {
+    await destroyOwnedHandle(resources);
+  }
 }
 
 function pagesAround(pageIndex: number, pageCount: number): Set<number> {
@@ -52,12 +100,23 @@ export function usePdfWorkspaceController() {
   });
   const [isOpening, setIsOpening] = useState(false);
   const [status, setStatus] = useState("准备就绪");
-  const activeDocumentRef = useRef<{
-    descriptor: DocumentDescriptor;
-    handle: PdfDocumentHandle;
-  } | null>(null);
+  const activeDocumentRef = useRef<OwnedDocument | null>(null);
+  const generationRef = useRef(0);
+  const mountedRef = useRef(true);
+  const pendingOpenRef = useRef<OpenOperation | null>(null);
+
+  const isCurrentOperation = useCallback((operation: OpenOperation) => {
+    return (
+      mountedRef.current &&
+      generationRef.current === operation.generation &&
+      pendingOpenRef.current === operation
+    );
+  }, []);
 
   const close = useCallback(async () => {
+    generationRef.current += 1;
+    const pending = pendingOpenRef.current;
+    pendingOpenRef.current = null;
     const active = activeDocumentRef.current;
     activeDocumentRef.current = null;
     setDescriptor(null);
@@ -65,30 +124,58 @@ export function usePdfWorkspaceController() {
     setPages([]);
     setScale(1);
     setCurrentPage(1);
+    setIsOpening(false);
     setStatus("准备就绪");
-    if (active) {
-      await disposeDocument(active.descriptor, active.handle);
-    }
+    await Promise.all([
+      pending?.resources
+        ? releaseDocument(pending.resources)
+        : Promise.resolve(),
+      active ? releaseDocument(active) : Promise.resolve(),
+    ]);
   }, []);
 
   const open = useCallback(async () => {
-    if (isOpening) {
+    if (!mountedRef.current || pendingOpenRef.current) {
       return;
     }
+    const operation: OpenOperation = {
+      generation: generationRef.current + 1,
+      resources: null,
+    };
+    generationRef.current = operation.generation;
+    pendingOpenRef.current = operation;
     setIsOpening(true);
     setStatus("正在打开 PDF…");
-    let nextDescriptor: DocumentDescriptor | null = null;
-    let nextHandle: PdfDocumentHandle | null = null;
 
     try {
-      nextDescriptor = await openPdfDocument();
+      const nextDescriptor = await openPdfDocument();
       if (!nextDescriptor) {
-        setStatus(activeDocumentRef.current ? "PDF 已打开" : "准备就绪");
+        if (isCurrentOperation(operation)) {
+          pendingOpenRef.current = null;
+          setStatus(activeDocumentRef.current ? "PDF 已打开" : "准备就绪");
+        }
+        return;
+      }
+      const resources = ownDocument(nextDescriptor);
+      operation.resources = resources;
+      if (!isCurrentOperation(operation)) {
+        await releaseDocument(resources);
         return;
       }
 
       const bytes = await readPdfBytes(nextDescriptor.documentSessionId);
-      nextHandle = await loadPdfDocument(bytes);
+      if (!isCurrentOperation(operation)) {
+        await releaseDocument(resources);
+        return;
+      }
+
+      const nextHandle = await loadPdfDocument(bytes);
+      await attachHandle(resources, nextHandle);
+      if (!isCurrentOperation(operation)) {
+        await releaseDocument(resources);
+        return;
+      }
+
       const nextPdfDocument = nextHandle.document;
       const nextPages = await Promise.all(
         Array.from({ length: nextPdfDocument.numPages }, async (_, index) => {
@@ -97,12 +184,14 @@ export function usePdfWorkspaceController() {
           return { page, width: viewport.width, height: viewport.height };
         }),
       );
+      if (!isCurrentOperation(operation)) {
+        await releaseDocument(resources);
+        return;
+      }
 
       const previous = activeDocumentRef.current;
-      activeDocumentRef.current = {
-        descriptor: nextDescriptor,
-        handle: nextHandle,
-      };
+      activeDocumentRef.current = resources;
+      pendingOpenRef.current = null;
       setDescriptor(nextDescriptor);
       setPdfDocument(nextPdfDocument);
       setPages(nextPages);
@@ -114,32 +203,49 @@ export function usePdfWorkspaceController() {
       }));
       setStatus(`${nextDescriptor.fileName} · ${nextPdfDocument.numPages} 页`);
       if (previous) {
-        await disposeDocument(previous.descriptor, previous.handle);
+        await releaseDocument(previous);
       }
     } catch {
-      if (nextDescriptor && nextHandle) {
-        await disposeDocument(nextDescriptor, nextHandle);
-      } else if (nextDescriptor) {
-        await closePdfDocument(nextDescriptor.documentSessionId).catch(
-          () => undefined,
-        );
+      const wasCurrent = isCurrentOperation(operation);
+      if (pendingOpenRef.current === operation) {
+        pendingOpenRef.current = null;
       }
-      setStatus("无法打开 PDF，请重试。");
+      if (operation.resources) {
+        await releaseDocument(operation.resources);
+      }
+      if (wasCurrent) {
+        setStatus("无法打开 PDF，请重试。");
+      }
     } finally {
-      setIsOpening(false);
+      if (
+        mountedRef.current &&
+        generationRef.current === operation.generation
+      ) {
+        if (pendingOpenRef.current === operation) {
+          pendingOpenRef.current = null;
+        }
+        setIsOpening(false);
+      }
     }
-  }, [isOpening]);
+  }, [isCurrentOperation]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      generationRef.current += 1;
+      const pending = pendingOpenRef.current;
+      pendingOpenRef.current = null;
       const active = activeDocumentRef.current;
       activeDocumentRef.current = null;
-      if (active) {
-        void disposeDocument(active.descriptor, active.handle);
-      }
-    },
-    [],
-  );
+      void Promise.all([
+        pending?.resources
+          ? releaseDocument(pending.resources)
+          : Promise.resolve(),
+        active ? releaseDocument(active) : Promise.resolve(),
+      ]);
+    };
+  }, []);
 
   const navigateToPage = useCallback((pageNumber: number) => {
     setNavigationRequest((request) => ({
