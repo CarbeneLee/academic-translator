@@ -22,7 +22,7 @@ button {
 .appShell {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr) 360px;
-  grid-template-rows: 48px minmax(0, 1fr);
+  grid-template-rows: 48px minmax(0, 1fr) 28px;
   min-height: 100vh;
   background: #edf0f3;
 }
@@ -33,59 +33,18 @@ button {
 
 .topToolbar {
   grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 16px;
-  color: #f8fafc;
   background: #25313b;
 }
 
-.productName {
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-
-.toolbarActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toolbarActions button,
-.toolRail button,
 .translationPanel button {
   border: 0;
   border-radius: 4px;
   cursor: pointer;
 }
 
-.toolbarActions button {
-  padding: 5px 8px;
-  color: inherit;
-  background: #3a4854;
-}
-
-.providerStatus {
-  color: #b9c5cc;
-  font-size: 0.85rem;
-}
-
 .toolRail {
-  display: flex;
-  justify-content: center;
-  padding-top: 14px;
   background: #f8fafc;
   border-right: 1px solid #d9e0e6;
-}
-
-.toolRail button {
-  width: 32px;
-  height: 32px;
-  color: #1f4f72;
-  background: #dbeaf4;
 }
 
 .pdfWorkspace {
@@ -131,4 +90,19 @@ button {
 .translationPanelPlaceholder {
   color: #687580;
   line-height: 1.6;
+}
+
+.settingsDialogRoot {
+  display: contents;
+}
+
+.statusBar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #687580;
+  font-size: 0.75rem;
+  background: #f8fafc;
+  border-top: 1px solid #d9e0e6;
 }

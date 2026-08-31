@@ -9,23 +9,9 @@ export function App() {
     <div
       className={`appShell${isTranslationPanelCollapsed ? " appShell--panelCollapsed" : ""}`}
     >
-      <header className="topToolbar" role="toolbar" aria-label="论文阅读工具">
-        <span className="productName">Academic Translator</span>
-        <div className="toolbarActions" aria-label="阅读工具">
-          <button type="button">打开 PDF</button>
-          <button type="button">缩小</button>
-          <span aria-label="当前页">— / —</span>
-          <button type="button">放大</button>
-          <span className="providerStatus">翻译服务未配置</span>
-          <button type="button">设置</button>
-        </div>
-      </header>
+      <header className="topToolbar" role="toolbar" aria-label="论文阅读工具" />
 
-      <nav className="toolRail" aria-label="PDF 工具栏">
-        <button type="button" aria-label="阅读模式">
-          阅
-        </button>
-      </nav>
+      <nav className="toolRail" aria-label="PDF 工具栏" />
 
       <main className="pdfWorkspace" aria-label="PDF 阅读区">
         <div className="emptyDocumentState">
@@ -55,7 +41,10 @@ export function App() {
         )}
       </aside>
 
-      <div id="settings-dialog-root" />
+      <div id="settings-dialog-root" className="settingsDialogRoot" />
+      <footer className="statusBar" role="status" aria-label="阅读状态">
+        准备就绪
+      </footer>
     </div>
   );
 }
