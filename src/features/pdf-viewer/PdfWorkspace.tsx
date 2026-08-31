@@ -6,6 +6,9 @@ import {
   readPdfBytes,
   type DocumentDescriptor,
 } from "../../shared/ipc/document";
+import { FloatingTranslateAction } from "../selection/FloatingTranslateAction";
+import type { SelectionFragment } from "../selection/types";
+import { usePdfSelection } from "../selection/usePdfSelection";
 import { loadPdfDocument, type PdfDocumentHandle } from "./pdfDocument";
 import { PdfPage } from "./PdfPage";
 
@@ -357,13 +360,27 @@ export function PdfDocumentToolbar({
 
 export function PdfWorkspace({
   controller,
+  onTranslate,
+  isRequestActive = false,
+  onCancelActiveRequest,
 }: {
   controller: PdfWorkspaceController;
+  onTranslate(fragments: SelectionFragment[]): void;
+  isRequestActive?: boolean;
+  onCancelActiveRequest?(): void;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const placeholdersRef = useRef(new Map<number, HTMLDivElement>());
   const visiblePagesRef = useRef(new Set<number>());
   const [mountedPages, setMountedPages] = useState<Set<number>>(new Set());
+  const selection = usePdfSelection({
+    rootRef: viewportRef,
+    documentSessionId: controller.descriptor?.documentSessionId ?? null,
+    scale: controller.scale,
+    onTranslate,
+    isRequestActive,
+    onCancelActiveRequest,
+  });
 
   useEffect(() => {
     if (controller.pages.length === 0) {
@@ -434,7 +451,7 @@ export function PdfWorkspace({
     controller.setCurrentPage,
   ]);
 
-  if (!controller.pdfDocument) {
+  if (!controller.pdfDocument || !controller.descriptor) {
     return (
       <div className="emptyDocumentState">
         <p>打开本地 PDF 开始阅读</p>
@@ -442,36 +459,51 @@ export function PdfWorkspace({
     );
   }
 
+  const descriptor = controller.descriptor;
+
   return (
-    <div ref={viewportRef} className="pdfPagesViewport">
-      <div className="pdfPages">
-        {controller.pages.map((pageRecord, pageIndex) => (
-          <div
-            key={pageIndex}
-            ref={(element) => {
-              if (element) {
-                placeholdersRef.current.set(pageIndex, element);
-              } else {
-                placeholdersRef.current.delete(pageIndex);
-              }
-            }}
-            className="pdfPagePlaceholder"
-            data-page-index={pageIndex}
-            style={{
-              width: pageRecord.width * controller.scale,
-              height: pageRecord.height * controller.scale,
-            }}
-          >
-            {mountedPages.has(pageIndex) && (
-              <PdfPage
-                page={pageRecord.page}
-                pageIndex={pageIndex}
-                scale={controller.scale}
-              />
-            )}
-          </div>
-        ))}
+    <div className="pdfWorkspaceSelectionShell">
+      <div
+        ref={viewportRef}
+        className="pdfPagesViewport"
+        data-document-session-id={descriptor.documentSessionId}
+      >
+        <div className="pdfPages">
+          {controller.pages.map((pageRecord, pageIndex) => (
+            <div
+              key={pageIndex}
+              ref={(element) => {
+                if (element) {
+                  placeholdersRef.current.set(pageIndex, element);
+                } else {
+                  placeholdersRef.current.delete(pageIndex);
+                }
+              }}
+              className="pdfPagePlaceholder"
+              data-page-index={pageIndex}
+              style={{
+                width: pageRecord.width * controller.scale,
+                height: pageRecord.height * controller.scale,
+              }}
+            >
+              {mountedPages.has(pageIndex) && (
+                <PdfPage
+                  page={pageRecord.page}
+                  pageIndex={pageIndex}
+                  scale={controller.scale}
+                  documentSessionId={descriptor.documentSessionId}
+                  highlightRects={selection.highlightRects}
+                  onTextLayerRendered={selection.registerTextLayer}
+                />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
+      <FloatingTranslateAction
+        fragments={selection.fragments}
+        onTranslate={onTranslate}
+      />
     </div>
   );
 }

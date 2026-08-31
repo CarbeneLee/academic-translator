@@ -5,6 +5,8 @@ import {
   type PDFPageProxy,
 } from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
+import { SelectionHighlights } from "../selection/SelectionHighlights";
+import type { HighlightRect } from "../selection/highlightGeometry";
 import "pdfjs-dist/web/pdf_viewer.css";
 
 const UNSUPPORTED_TEXT_MESSAGE = "此页面没有可用的文本层，无法选择文本。";
@@ -19,7 +21,14 @@ export function tagTextLayer(
   pageIndex: number,
   textItems: readonly TextItem[],
   textLayer: HTMLElement,
+  documentSessionId?: string,
 ): void {
+  textLayer.dataset.pageIndex = String(pageIndex);
+  if (documentSessionId) {
+    textLayer.dataset.documentSessionId = documentSessionId;
+  } else {
+    delete textLayer.dataset.documentSessionId;
+  }
   const indexedItems = textItems
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => item.str.length > 0);
@@ -32,6 +41,9 @@ export function tagTextLayer(
 
   if (indexedItems.length === 0 || indexedItems.length !== spans.length) {
     textLayer.dataset.selectionSupported = "false";
+    textLayer.dispatchEvent(
+      new CustomEvent("textlayerrendered", { bubbles: true }),
+    );
     return;
   }
 
@@ -41,15 +53,28 @@ export function tagTextLayer(
     span.dataset.pageIndex = String(pageIndex);
     span.dataset.textItemIndex = String(index);
   });
+  textLayer.dispatchEvent(
+    new CustomEvent("textlayerrendered", { bubbles: true }),
+  );
 }
 
 type PdfPageProps = {
   page: PDFPageProxy;
   pageIndex: number;
   scale: number;
+  documentSessionId: string;
+  highlightRects: readonly HighlightRect[];
+  onTextLayerRendered(pageIndex: number, textLayer: HTMLElement | null): void;
 };
 
-export function PdfPage({ page, pageIndex, scale }: PdfPageProps) {
+export function PdfPage({
+  page,
+  pageIndex,
+  scale,
+  documentSessionId,
+  highlightRects,
+  onTextLayerRendered,
+}: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [selectionSupported, setSelectionSupported] = useState<boolean | null>(
@@ -108,7 +133,13 @@ export function PdfPage({ page, pageIndex, scale }: PdfPageProps) {
       const textItems = textContent.items.filter(
         (item): item is TextItem => "str" in item,
       );
-      tagTextLayer(pageIndex, textItems, textLayerElement);
+      tagTextLayer(
+        pageIndex,
+        textItems,
+        textLayerElement,
+        documentSessionId,
+      );
+      onTextLayerRendered(pageIndex, textLayerElement);
       setSelectionSupported(
         textLayerElement.dataset.selectionSupported === "true",
       );
@@ -123,14 +154,19 @@ export function PdfPage({ page, pageIndex, scale }: PdfPageProps) {
 
     return () => {
       disposed = true;
+      onTextLayerRendered(pageIndex, null);
       canvasTask?.cancel();
       textLayerTask?.cancel();
     };
-  }, [page, pageIndex, scale]);
+  }, [documentSessionId, onTextLayerRendered, page, pageIndex, scale]);
 
   return (
     <div className="pdfPageSurface" aria-label={`第 ${pageIndex + 1} 页`}>
       <canvas ref={canvasRef} className="pdfPageCanvas" />
+      <SelectionHighlights
+        pageIndex={pageIndex}
+        rectangles={highlightRects}
+      />
       <div ref={textLayerRef} className="textLayer pdfTextLayer" />
       {selectionSupported === false && (
         <p className="pdfPageNotice" role="status">

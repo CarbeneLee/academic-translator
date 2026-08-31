@@ -6,6 +6,8 @@ import {
 } from "../features/pdf-viewer/PdfWorkspace";
 import "./App.css";
 
+const handleTranslateSelection = () => undefined;
+
 export function App() {
   const [isTranslationPanelCollapsed, setIsTranslationPanelCollapsed] =
     useState(false);
@@ -22,7 +24,10 @@ export function App() {
       <nav className="toolRail" aria-label="PDF 工具栏" />
 
       <main className="pdfWorkspace" aria-label="PDF 阅读区">
-        <PdfWorkspace controller={pdfWorkspace} />
+        <PdfWorkspace
+          controller={pdfWorkspace}
+          onTranslate={handleTranslateSelection}
+        />
       </main>
 
       <aside

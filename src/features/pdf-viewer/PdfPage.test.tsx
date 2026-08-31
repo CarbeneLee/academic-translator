@@ -58,3 +58,24 @@ test("marks selection unsupported instead of assigning unstable anchors", () => 
   expect(textLayer.dataset.selectionSupported).toBe("false");
   expect(textLayer.querySelector("[data-text-item-index]")).toBeNull();
 });
+
+test("tags a rendered text layer with its document session and announces rerenders", () => {
+  const textLayer = document.createElement("div");
+  textLayer.append(renderedSpan());
+  const rendered = vi.fn();
+  textLayer.addEventListener("textlayerrendered", rendered);
+
+  tagTextLayer(
+    2,
+    [textItem("stable anchor")],
+    textLayer,
+    "document-session-1",
+  );
+
+  expect(textLayer).toHaveAttribute("data-page-index", "2");
+  expect(textLayer).toHaveAttribute(
+    "data-document-session-id",
+    "document-session-1",
+  );
+  expect(rendered).toHaveBeenCalledOnce();
+});
