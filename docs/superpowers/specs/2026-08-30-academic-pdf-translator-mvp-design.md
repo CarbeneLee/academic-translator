@@ -1,8 +1,10 @@
 # Academic PDF Translator MVP Design
 
-**Status:** Approved
+**Status:** Approved for Implementation
 
 **Date:** 2026-08-30
+
+**Last reviewed:** 2026-08-31
 
 ## 1. Goal
 
@@ -93,7 +95,7 @@ The left rail must not contain inactive placeholders for notes, chat, or other p
 
 - A normal selection replaces the current selection set.
 - Holding Alt while selecting appends a fragment.
-- A fragment records its page number, selection order, and selected text.
+- A fragment records its document-session ID, addition order, selected text, and one or more page-local text-layer spans.
 - Added fragments are combined in the order the user added them.
 - Fragment boundaries become paragraph separators.
 - The application must not fill gaps between fragments.
@@ -106,6 +108,31 @@ The left rail must not contain inactive placeholders for notes, chat, or other p
 - Escape clears the selection or cancels the current request, depending on focus and request state.
 
 Selections inside toolbars, settings, or the translation panel must not be treated as PDF selections.
+
+#### 4.2.1 Cross-WebView Implementation Constraint
+
+Native DOM Selection is only a transient capture mechanism for the one contiguous Range produced by the current drag. Additive selection must not use repeated Selection.addRange calls or assume browser multi-range support; Chromium/WebView2 and WebKit do not reliably preserve multiple ranges.
+
+On mouseup, the selection engine converts the current Range into application-owned SelectionFragment state. Each page-local span stores:
+
+- PDF page index.
+- Start text-item index and UTF-16 offset.
+- End text-item index and UTF-16 offset.
+- Captured source text.
+
+The fragment stores a stable fragment ID, document-session ID, and addition order. After capture, the native DOM Selection may be cleared; previously captured fragments remain selected through application-rendered highlight overlays.
+
+Text-layer anchors are the persistent source of truth. Viewport rectangles are derived rendering data, not persistent selection identity. When a page mounts again, the zoom level changes, or PDF.js rebuilds a text layer, highlight rectangles are recomputed from the stored anchors.
+
+State transitions are fixed:
+
+- A non-Alt capture replaces all prior SelectionFragment state and highlights.
+- An Alt capture appends one fragment and retains earlier application-owned highlights.
+- Page virtualization may hide a highlight but must not delete its fragment state.
+- Zoom and page rerender must preserve fragments and recompute visible highlights.
+- Escape clears fragments and highlights when no request-cancel action has priority.
+- PDF close or document-session replacement clears every fragment and highlight.
+- Anchors from one document-session ID must never be applied to another document.
 
 ### 4.3 Translation Panel
 
@@ -220,7 +247,7 @@ The WebView must not:
 
 Rust owns:
 
-- Native document selection and read-only document access.
+- Native PDF file picking and trusted read-only local document access after user-approved file selection.
 - Credential persistence and retrieval.
 - Translation normalization and limits.
 - Chunking.
@@ -314,9 +341,16 @@ Provider-specific authentication, request fields, and error codes stay inside th
 - Thinking: disabled with reasoning.effort set to none.
 - Streaming: false.
 - Temperature: 0.2.
+- System instruction field: instructions, containing the canonical prompt in §10.2.
+- User input field: input, containing one user message with one input_text content item whose text is the serialized mode/selected_text JSON object.
+- Structured output type: text.format.type set to json_schema.
+- Structured output name: text.format.name set to academic_translation_result.
+- Structured output schema: text.format.schema set to the exact schema in §10.3.
 - Tools: omitted.
 - Conversation history: omitted.
 - Previous response ID: omitted.
+
+The Responses API request must not use response_format. That field belongs to the Chat Completions contract and is not a substitute for text.format.
 
 The API model alias and internal MODEL_REVISION are separate. When DeepSeek changes the model behind the alias, the project must review translation behavior and bump MODEL_REVISION before treating new responses as cache-compatible.
 
@@ -368,7 +402,47 @@ No title, surrounding context, previous translation, full page, or full PDF is s
 }
 ~~~
 
-### 10.4 Response Validation
+### 10.4 Normative Responses API Request Shape
+
+The Rust adapter constructs this field shape:
+
+~~~text
+{
+  "model": "deepseek-v4-flash",
+  "instructions": CANONICAL_PROMPT_ACADEMIC_ZH_V1,
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": serialize_json({
+            "mode": derived_translation_mode,
+            "selected_text": normalized_selected_text
+          })
+        }
+      ]
+    }
+  ],
+  "reasoning": {
+    "effort": "none"
+  },
+  "temperature": 0.2,
+  "stream": false,
+  "max_output_tokens": computed_output_budget,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "academic_translation_result",
+      "schema": ACADEMIC_TRANSLATION_RESULT_SCHEMA
+    }
+  }
+}
+~~~
+
+CANONICAL_PROMPT_ACADEMIC_ZH_V1 is the exact prompt in §10.2. ACADEMIC_TRANSLATION_RESULT_SCHEMA is the exact schema in §10.3. computed_output_budget follows §5.4. derived_translation_mode and normalized_selected_text are application-derived values, not raw provider-controlled fields.
+
+### 10.5 Response Validation
 
 A DeepSeek response is accepted only when:
 
@@ -415,18 +489,31 @@ The App Secret never enters the frontend provider code and is never logged.
 
 ## 13. Cache Design
 
-The cache key is SHA-256 over:
+CACHE_KEY_VERSION is 1.
 
-- Normalized selected text.
-- Source language.
-- Target language.
-- Provider.
-- Provider model ID.
-- Internal model revision.
-- Prompt version.
-- Normalization version.
+Derive the source fingerprint first:
 
-Serialize these named fields with a deterministic, versioned encoding before hashing. Do not hash an ambiguous bare concatenation of field values.
+    source_text_hash =
+        SHA-256(UTF-8(normalized_selected_text))
+
+Then derive the final key:
+
+    cache_key =
+        SHA-256(
+            canonical_encode({
+                cache_key_version: 1,
+                source_text_hash,
+                source_language,
+                target_language,
+                provider,
+                model_id,
+                model_revision,
+                prompt_version,
+                normalization_version
+            })
+        )
+
+source_text_hash is encoded as lowercase hexadecimal inside the canonical payload. canonical_encode is UTF-8 JSON with the exact field order above, no insignificant whitespace, and stable domain-enum strings. Do not hash a bare concatenation of values and do not hash normalized_selected_text directly into the outer payload.
 
 The cache stores:
 
@@ -444,6 +531,8 @@ The cache does not store:
 - API credentials.
 - Provider request or response envelopes.
 - Raw English selected text.
+
+Only source_text_hash and cache_key may represent the English selection in SQLite.
 
 Eviction:
 
@@ -597,3 +686,4 @@ A change is done only when:
 - Tauri file dialog: https://v2.tauri.app/plugin/dialog/
 - Tauri filesystem security: https://v2.tauri.app/plugin/file-system/
 - Tauri capabilities: https://v2.tauri.app/security/capabilities/
+- MDN Selection.addRange compatibility: https://developer.mozilla.org/en-US/docs/Web/API/Selection/addRange

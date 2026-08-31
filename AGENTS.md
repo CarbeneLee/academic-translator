@@ -112,6 +112,20 @@ Do not add inactive note, chat, OCR, or AI-workbench placeholders.
 - Selection changes cancel or supersede the active request.
 - A stale response must never overwrite a newer result.
 
+Native DOM Selection is only a transient capture mechanism for the current contiguous drag range.
+
+Do not implement Alt-additive selection with repeated Selection.addRange calls or assume browser multi-range Selection support.
+
+After mouseup, convert the current Range into application-owned SelectionFragment state with:
+
+- Stable fragment ID.
+- Document-session ID.
+- Addition order.
+- Selected text.
+- Page-local anchors using PDF page index, text-item indices, and UTF-16 offsets.
+
+Persistent highlights must be application-rendered from stored anchors and independent of the browser's current DOM Selection. Recompute visible highlight geometry after zoom, page remount, or PDF.js text-layer rerender. Page virtualization must not delete fragment state. Ordinary replacement selection, Escape, PDF close, and document-session replacement must update fragment state and highlights together.
+
 ## PDF Rules
 
 - Treat the PDF.js text layer as the authoritative source of selectable text.
@@ -174,7 +188,7 @@ Frontend:
 
 Rust:
 
-- Native document access.
+- Native PDF file picking and trusted read-only local document access after user-approved file selection.
 - Text normalization.
 - Selection budgets.
 - Chunking.
@@ -225,6 +239,11 @@ Use:
 - reasoning.effort equal to none.
 - temperature equal to 0.2.
 - stream equal to false.
+- instructions equal to the canonical prompt.
+- input containing exactly one user message with one input_text item whose text is the serialized mode/selected_text JSON object.
+- text.format.type equal to json_schema.
+- text.format.name equal to academic_translation_result.
+- text.format.schema equal to the exact approved schema below.
 - No tools.
 - No previous response ID.
 - No conversation history.
@@ -232,6 +251,8 @@ Use:
 Do not use deepseek-v4-flash-0731 as the API model ID unless official documentation explicitly introduces that ID and the project approves the change.
 
 Do not copy Chat Completions thinking.type examples into the Responses API request. The approved Responses API switch is reasoning.effort equal to none.
+
+Do not use response_format for DeepSeek structured output. The approved Responses API transport path is text.format.
 
 ### Canonical Prompt
 
@@ -271,6 +292,42 @@ Normal input contains only mode and selected_text.
   "additionalProperties": false
 }
 ~~~
+
+The Rust adapter must construct this normative request shape:
+
+~~~text
+{
+  "model": "deepseek-v4-flash",
+  "instructions": CANONICAL_PROMPT_ACADEMIC_ZH_V1,
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": serialize_json({
+            "mode": derived_translation_mode,
+            "selected_text": normalized_selected_text
+          })
+        }
+      ]
+    }
+  ],
+  "reasoning": { "effort": "none" },
+  "temperature": 0.2,
+  "stream": false,
+  "max_output_tokens": computed_output_budget,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "name": "academic_translation_result",
+      "schema": ACADEMIC_TRANSLATION_RESULT_SCHEMA
+    }
+  }
+}
+~~~
+
+The named prompt and schema constants above refer to the exact approved prompt and schema in this file. The output budget must follow the formula below.
 
 ### DeepSeek Output Budget
 
@@ -346,18 +403,31 @@ Environment files are ignored except an explicit example file.
 
 Use SQLite in the application data directory.
 
-The cache identity includes:
+CACHE_KEY_VERSION is 1.
 
-- Normalized selected text hash.
-- Source language.
-- Target language.
-- Provider.
-- Model ID.
-- Internal model revision.
-- Prompt version.
-- Normalization version.
+Use this exact derivation:
 
-Serialize these named fields with a deterministic, versioned encoding before hashing. Do not hash an ambiguous bare concatenation of values.
+    source_text_hash =
+        SHA-256(UTF-8(normalized_selected_text))
+
+    cache_key =
+        SHA-256(
+            canonical_encode({
+                cache_key_version: 1,
+                source_text_hash,
+                source_language,
+                target_language,
+                provider,
+                model_id,
+                model_revision,
+                prompt_version,
+                normalization_version
+            })
+        )
+
+Encode source_text_hash as lowercase hexadecimal. canonical_encode is UTF-8 JSON with the exact field order above, no insignificant whitespace, and stable domain-enum strings.
+
+Do not hash a bare concatenation of values. Do not include normalized_selected_text directly in the outer payload.
 
 Store only:
 
@@ -369,6 +439,8 @@ Store only:
 - Optional aggregate usage.
 
 Do not store PDF bytes, PDF paths, credentials, raw provider envelopes, or raw English selection text.
+
+Only source_text_hash and cache_key may represent the English selection in SQLite.
 
 Eviction rules:
 
