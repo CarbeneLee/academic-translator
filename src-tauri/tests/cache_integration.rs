@@ -761,6 +761,60 @@ async fn startup_cleanup_removes_invalid_times_before_lru_can_evict_valid_data()
 }
 
 #[tokio::test]
+async fn startup_cleanup_deletes_real_timestamps_before_lru_ordering() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("translation-cache.sqlite3");
+    let now = 1_700_000_000;
+    let cache = open_cache(&path, FakeClock::at(now), CachePolicy::production()).await;
+    let valid = cache_record("integer-time-under-pressure", "v".repeat(12_000));
+    let corrupt = cache_record("real-time-under-pressure", "c".repeat(12_000));
+    let valid_key = valid.cache_key.clone();
+    let corrupt_key = corrupt.cache_key.clone();
+    cache.put(valid).await.unwrap();
+    cache.put(corrupt).await.unwrap();
+    drop(cache);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE translations SET created_at = ?2, last_accessed_at = ?2 \
+             WHERE cache_key = ?1",
+            rusqlite::params![&valid_key, now - 1],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE translations SET created_at = ?2, last_accessed_at = ?2 \
+             WHERE cache_key = ?1",
+            rusqlite::params![&corrupt_key, 1_699_999_999.5_f64],
+        )
+        .unwrap();
+    let storage_classes = connection
+        .query_row(
+            "SELECT typeof(created_at), typeof(last_accessed_at) \
+             FROM translations WHERE cache_key = ?1",
+            [&corrupt_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    assert_eq!(storage_classes, ("real".to_owned(), "real".to_owned()));
+    drop(connection);
+
+    let reopened = open_cache(
+        &path,
+        FakeClock::at(now),
+        CachePolicy {
+            ttl: SEVEN_DAYS,
+            max_bytes: 40 * 1024,
+        },
+    )
+    .await;
+
+    assert_eq!(stored_cache_keys(&path), vec![valid_key]);
+    assert_eq!(reopened.stats().await.unwrap().row_count, 1);
+}
+
+#[tokio::test]
 async fn corrupt_cache_rows_are_deleted_without_display_or_ttl_renewal() {
     let mutations = [
         (

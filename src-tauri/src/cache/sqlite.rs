@@ -498,7 +498,9 @@ fn cleanup_database(path: &Path, policy: CachePolicy, now: i64) -> rusqlite::Res
     let connection = open_ready_connection(path)?;
     connection.execute(
         "DELETE FROM translations \
-         WHERE last_accessed_at < ?1 \
+         WHERE typeof(created_at) != 'integer' \
+            OR typeof(last_accessed_at) != 'integer' \
+            OR last_accessed_at < ?1 \
             OR created_at < 0 \
             OR created_at > last_accessed_at \
             OR last_accessed_at > ?2",
