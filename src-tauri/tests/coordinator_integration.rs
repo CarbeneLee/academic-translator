@@ -10,8 +10,8 @@ use std::{
 
 use academic_translator_lib::{
     cache::{
-        CachePolicy, CacheRecord, CacheStats, CachedTranslation, SqliteTranslationCache,
-        TranslationCache,
+        CacheLookup, CachePolicy, CacheRecord, CacheStats, CachedTranslation,
+        SqliteTranslationCache, TranslationCache,
     },
     document::sessions::DocumentSessionStore,
     errors::{AppError, CommandError},
@@ -274,7 +274,7 @@ impl MemoryCache {
 
 #[async_trait]
 impl TranslationCache for MemoryCache {
-    async fn get(&self, key: &str) -> Result<Option<CachedTranslation>, AppError> {
+    async fn get(&self, lookup: &CacheLookup) -> Result<Option<CachedTranslation>, AppError> {
         let mut state = self.inner.lock().unwrap();
         state.get_calls += 1;
         assert!(
@@ -285,7 +285,7 @@ impl TranslationCache for MemoryCache {
         if state.fail_get {
             return Err(AppError::cache_unavailable());
         }
-        Ok(state.values.get(key).cloned())
+        Ok(state.values.get(&lookup.cache_key).cloned())
     }
 
     async fn put(&self, record: CacheRecord) -> Result<(), AppError> {
@@ -315,6 +315,80 @@ impl TranslationCache for MemoryCache {
         );
         state.puts.push(record);
         Ok(())
+    }
+
+    async fn cleanup(&self) -> Result<CacheStats, AppError> {
+        panic!("coordinator must not invoke cache cleanup directly")
+    }
+
+    async fn clear(&self) -> Result<(), AppError> {
+        panic!("coordinator must not clear cache")
+    }
+
+    async fn stats(&self) -> Result<CacheStats, AppError> {
+        panic!("coordinator must not request cache stats")
+    }
+}
+
+#[derive(Clone)]
+struct BlockingMissCache {
+    inner: Arc<BlockingMissCacheState>,
+}
+
+struct BlockingMissCacheState {
+    get_calls: AtomicUsize,
+    put_calls: AtomicUsize,
+    arrived: Semaphore,
+    release: Semaphore,
+}
+
+impl BlockingMissCache {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(BlockingMissCacheState {
+                get_calls: AtomicUsize::new(0),
+                put_calls: AtomicUsize::new(0),
+                arrived: Semaphore::new(0),
+                release: Semaphore::new(0),
+            }),
+        }
+    }
+
+    async fn wait_until_get(&self) {
+        tokio::time::timeout(Duration::from_secs(1), self.inner.arrived.acquire())
+            .await
+            .expect("bounded cache get arrives")
+            .expect("cache arrival semaphore remains open")
+            .forget();
+    }
+
+    fn release_miss(&self) {
+        self.inner.release.add_permits(1);
+    }
+
+    fn assert_calls(&self, gets: usize, puts: usize) {
+        assert_eq!(self.inner.get_calls.load(Ordering::SeqCst), gets);
+        assert_eq!(self.inner.put_calls.load(Ordering::SeqCst), puts);
+    }
+}
+
+#[async_trait]
+impl TranslationCache for BlockingMissCache {
+    async fn get(&self, _lookup: &CacheLookup) -> Result<Option<CachedTranslation>, AppError> {
+        let call = self.inner.get_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        assert_eq!(call, 1, "blocking cache get has a hard bound of one");
+        self.inner.arrived.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(1), self.inner.release.acquire())
+            .await
+            .expect("test releases bounded cache get")
+            .expect("cache release semaphore remains open")
+            .forget();
+        Ok(None)
+    }
+
+    async fn put(&self, _record: CacheRecord) -> Result<(), AppError> {
+        self.inner.put_calls.fetch_add(1, Ordering::SeqCst);
+        panic!("cancelled cache wait must never write")
     }
 
     async fn cleanup(&self) -> Result<CacheStats, AppError> {
@@ -373,7 +447,7 @@ async fn translates_exactly_two_chunks_sequentially_and_caches_only_the_complete
     ]);
     let cache = MemoryCache::bounded(2, 1);
     let requests = RequestRegistry::default();
-    let coordinator = coordinator(provider.clone(), cache.clone(), requests);
+    let coordinator = coordinator(provider.clone(), cache.clone(), requests.clone());
     let (sessions, session_id) = live_session();
 
     let first = coordinator
@@ -415,6 +489,7 @@ async fn translates_exactly_two_chunks_sequentially_and_caches_only_the_complete
     assert_eq!(second.request_id, second_request_id);
     assert!(second.cache_hit);
     assert_eq!(second.translation, "第一段\n\n第二段");
+    assert!(requests.is_empty(), "cache-hit guard must be removed");
     provider.assert_exhausted();
     cache.assert_calls(2, 1);
 }
@@ -488,6 +563,115 @@ async fn cancellation_during_a_chunk_stops_remaining_calls_and_skips_cache_write
     assert_eq!(error.code(), "REQUEST_CANCELLED");
     provider.assert_exhausted();
     cache.assert_calls(1, 0);
+}
+
+#[tokio::test]
+async fn cancellation_during_a_blocking_cache_miss_stops_before_provider_and_write() {
+    let provider = BoundedProvider::no_calls_allowed();
+    let cache = BlockingMissCache::new();
+    let requests = RequestRegistry::default();
+    let coordinator = Arc::new(TranslationCoordinator::new(
+        vec![Arc::new(provider.clone()) as Arc<dyn TranslationProvider>],
+        Arc::new(cache.clone()) as Arc<dyn TranslationCache>,
+        requests.clone(),
+    ));
+    let (sessions, session_id) = live_session();
+    let request_id = Uuid::new_v4();
+    let task = {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move {
+            coordinator
+                .translate(
+                    request(request_id, session_id, "blocking cache source"),
+                    &sessions,
+                )
+                .await
+        })
+    };
+    cache.wait_until_get().await;
+
+    requests.cancel(request_id);
+    cache.release_miss();
+    let error = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("cache-wait cancellation completes")
+        .expect("coordinator task does not panic")
+        .unwrap_err();
+
+    assert_eq!(error.code(), "REQUEST_CANCELLED");
+    assert_eq!(provider.call_count(), 0);
+    cache.assert_calls(1, 0);
+    assert!(requests.is_empty(), "cancelled cache guard must be removed");
+}
+
+#[tokio::test]
+async fn same_uuid_cached_replacement_cancels_an_older_provider_request() {
+    let provider = BoundedProvider::new(vec![ProviderStep::WaitForCancellation]);
+    let cache = MemoryCache::bounded(2, 0);
+    let requests = RequestRegistry::default();
+    let coordinator = Arc::new(coordinator(
+        provider.clone(),
+        cache.clone(),
+        requests.clone(),
+    ));
+    let (sessions, session_id) = live_session();
+    let sessions = Arc::new(sessions);
+    let request_id = Uuid::new_v4();
+    let replacement_source = "cached replacement source";
+    let metadata = deepseek_metadata();
+    cache.seed(
+        cache_key(replacement_source, ProviderId::Deepseek, &metadata).unwrap(),
+        CachedTranslation {
+            provider: ProviderId::Deepseek,
+            model_id: metadata.model_id.clone(),
+            model_revision: metadata.model_revision.clone(),
+            prompt_version: metadata.prompt_version.clone(),
+            normalization_version: NORMALIZATION_VERSION.to_owned(),
+            translation: "缓存替换译文".to_owned(),
+            created_at: 1,
+            last_accessed_at: 1,
+            usage: usage(Some(4), Some(2)),
+        },
+    );
+
+    let mut older = {
+        let coordinator = Arc::clone(&coordinator);
+        let sessions = Arc::clone(&sessions);
+        tokio::spawn(async move {
+            coordinator
+                .translate(
+                    request(request_id, session_id, "older provider source"),
+                    &sessions,
+                )
+                .await
+        })
+    };
+    provider.wait_for_arrivals(1).await;
+
+    let replacement = coordinator
+        .translate(
+            request(request_id, session_id, replacement_source),
+            &sessions,
+        )
+        .await
+        .unwrap();
+    let older_error = match tokio::time::timeout(Duration::from_millis(200), &mut older).await {
+        Ok(result) => result
+            .expect("older request task does not panic")
+            .unwrap_err(),
+        Err(_) => {
+            requests.cancel(request_id);
+            let _ = tokio::time::timeout(Duration::from_secs(1), older).await;
+            panic!("cached replacement did not cancel the older provider request")
+        }
+    };
+
+    assert!(replacement.cache_hit);
+    assert_eq!(replacement.translation, "缓存替换译文");
+    assert_eq!(older_error.code(), "REQUEST_CANCELLED");
+    provider.assert_exhausted();
+    cache.assert_calls(2, 0);
+    assert!(requests.is_empty(), "replacement guard must be removed");
 }
 
 #[tokio::test]
@@ -626,6 +810,58 @@ async fn startup_sqlite_failure_uses_a_non_persisting_backend_and_translation_st
 
     assert_eq!(result.translation, "无缓存仍可用");
     assert_eq!(result.diagnostics, vec![DiagnosticCode::CacheUnavailable]);
+    provider.assert_exhausted();
+}
+
+#[tokio::test]
+async fn a_corrupt_sqlite_hit_is_deleted_and_provider_success_reports_one_diagnostic() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("translation-cache.sqlite3");
+    let cache = SqliteTranslationCache::open(path.clone(), CachePolicy::production())
+        .await
+        .unwrap();
+    let source = "source text";
+    let metadata = deepseek_metadata();
+    cache
+        .put(CacheRecord {
+            cache_key: cache_key(source, ProviderId::Deepseek, &metadata).unwrap(),
+            source_text_hash: academic_translator_lib::translation::source_text_hash(source),
+            source_language: "en".to_owned(),
+            target_language: "zh-CN".to_owned(),
+            provider: ProviderId::Deepseek,
+            model_id: metadata.model_id.clone(),
+            model_revision: metadata.model_revision.clone(),
+            prompt_version: metadata.prompt_version.clone(),
+            normalization_version: NORMALIZATION_VERSION.to_owned(),
+            translation: "不得显示的污染缓存".to_owned(),
+            usage: usage(Some(1), Some(1)),
+        })
+        .await
+        .unwrap();
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE translations SET source_language = 'fr'", [])
+        .unwrap();
+    let provider = BoundedProvider::new(vec![ProviderStep::Success {
+        translation: "可信新译文".to_owned(),
+        usage: usage(Some(8), Some(4)),
+    }]);
+    let coordinator = TranslationCoordinator::new(
+        vec![Arc::new(provider.clone()) as Arc<dyn TranslationProvider>],
+        Arc::new(cache.clone()) as Arc<dyn TranslationCache>,
+        RequestRegistry::default(),
+    );
+    let (sessions, session_id) = live_session();
+
+    let result = coordinator
+        .translate(request(Uuid::new_v4(), session_id, source), &sessions)
+        .await
+        .unwrap();
+
+    assert_eq!(result.translation, "可信新译文");
+    assert!(!result.cache_hit);
+    assert_eq!(result.diagnostics, vec![DiagnosticCode::CacheUnavailable]);
+    assert_eq!(cache.stats().await.unwrap().row_count, 1);
     provider.assert_exhausted();
 }
 

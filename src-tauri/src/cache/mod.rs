@@ -61,6 +61,35 @@ pub struct CacheRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheLookup {
+    pub cache_key: String,
+    pub source_text_hash: String,
+    pub source_language: String,
+    pub target_language: String,
+    pub provider: ProviderId,
+    pub model_id: String,
+    pub model_revision: String,
+    pub prompt_version: String,
+    pub normalization_version: String,
+}
+
+impl From<&CacheRecord> for CacheLookup {
+    fn from(record: &CacheRecord) -> Self {
+        Self {
+            cache_key: record.cache_key.clone(),
+            source_text_hash: record.source_text_hash.clone(),
+            source_language: record.source_language.clone(),
+            target_language: record.target_language.clone(),
+            provider: record.provider,
+            model_id: record.model_id.clone(),
+            model_revision: record.model_revision.clone(),
+            prompt_version: record.prompt_version.clone(),
+            normalization_version: record.normalization_version.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedTranslation {
     pub provider: ProviderId,
     pub model_id: String,
@@ -82,7 +111,7 @@ pub struct CacheStats {
 
 #[async_trait]
 pub trait TranslationCache: Send + Sync {
-    async fn get(&self, key: &str) -> Result<Option<CachedTranslation>, AppError>;
+    async fn get(&self, lookup: &CacheLookup) -> Result<Option<CachedTranslation>, AppError>;
     async fn put(&self, record: CacheRecord) -> Result<(), AppError>;
     async fn cleanup(&self) -> Result<CacheStats, AppError>;
     async fn clear(&self) -> Result<(), AppError>;

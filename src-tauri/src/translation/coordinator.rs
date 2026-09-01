@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    cache::{CacheRecord, CachedTranslation, TranslationCache},
+    cache::{CacheLookup, CacheRecord, CachedTranslation, TranslationCache},
     document::sessions::DocumentSessionStore,
     errors::{AppError, TranslationDomainError},
 };
@@ -54,6 +54,7 @@ impl TranslationCoordinator {
             .ok_or_else(AppError::provider_unavailable)?;
         let metadata = provider.model_metadata();
         let mut diagnostics = Vec::new();
+        let source_hash = source_text_hash(&prepared.normalized_text);
         let key = match cache_key(&prepared.normalized_text, request.provider, &metadata) {
             Ok(key) => Some(key),
             Err(_) => {
@@ -61,10 +62,26 @@ impl TranslationCoordinator {
                 None
             }
         };
+        let registration = self.requests.register(request.request_id);
+        let cancellation = registration.token();
 
         if let Some(key) = &key {
-            match self.cache.get(key).await {
+            let lookup = CacheLookup {
+                cache_key: key.clone(),
+                source_text_hash: source_hash.clone(),
+                source_language: SOURCE_LANGUAGE.to_owned(),
+                target_language: TARGET_LANGUAGE.to_owned(),
+                provider: request.provider,
+                model_id: metadata.model_id.clone(),
+                model_revision: metadata.model_revision.clone(),
+                prompt_version: metadata.prompt_version.clone(),
+                normalization_version: NORMALIZATION_VERSION.to_owned(),
+            };
+            let cached = self.cache.get(&lookup).await;
+            ensure_not_cancelled(&cancellation)?;
+            match cached {
                 Ok(Some(cached)) if valid_cached_result(&cached, request.provider, &metadata) => {
+                    ensure_not_cancelled(&cancellation)?;
                     return Ok(TranslationResultDto {
                         request_id: request.request_id,
                         document_session_id: request.document_session_id,
@@ -82,8 +99,6 @@ impl TranslationCoordinator {
             }
         }
 
-        let registration = self.requests.register(request.request_id);
-        let cancellation = registration.token();
         let mut translations = Vec::with_capacity(prepared.chunks.len());
         let mut usage = TokenUsage {
             input_tokens: Some(0),
@@ -124,7 +139,7 @@ impl TranslationCoordinator {
         if let Some(key) = key {
             let record = CacheRecord {
                 cache_key: key,
-                source_text_hash: source_text_hash(&prepared.normalized_text),
+                source_text_hash: source_hash,
                 source_language: SOURCE_LANGUAGE.to_owned(),
                 target_language: TARGET_LANGUAGE.to_owned(),
                 provider: request.provider,

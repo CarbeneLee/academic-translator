@@ -59,6 +59,14 @@ impl RequestRegistry {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.inner
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+
     fn remove_if_current(&self, request_id: Uuid, registration_id: Uuid) {
         let mut entries = self
             .inner

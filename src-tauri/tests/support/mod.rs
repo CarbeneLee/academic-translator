@@ -7,7 +7,7 @@ use std::{
 };
 
 use academic_translator_lib::{
-    cache::CacheRecord,
+    cache::{CacheLookup, CacheRecord},
     translation::{source_text_hash, ProviderId, TokenUsage, NORMALIZATION_VERSION},
 };
 
@@ -52,6 +52,10 @@ pub fn cache_record(label: &str, translation: impl Into<String>) -> CacheRecord 
             output_tokens: Some(11),
         },
     }
+}
+
+pub fn cache_lookup(label: &str) -> CacheLookup {
+    CacheLookup::from(&cache_record(label, "test-only lookup placeholder"))
 }
 
 pub fn physical_database_bytes(path: &std::path::Path) -> u64 {
