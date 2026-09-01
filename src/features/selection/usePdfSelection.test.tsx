@@ -1,4 +1,10 @@
-import { act, fireEvent, render, renderHook } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+} from "@testing-library/react";
 import type { RefObject } from "react";
 import { FloatingTranslateAction } from "./FloatingTranslateAction";
 import { usePdfSelection } from "./usePdfSelection";
@@ -86,6 +92,33 @@ test("normal mouseup replaces while Alt mouseup appends without translating", ()
   fireEvent.mouseUp(root);
   expect(result.current.fragments.map((fragment) => fragment.text)).toEqual([
     "gamma",
+  ]);
+  expect(onTranslate).not.toHaveBeenCalled();
+});
+
+test("selection mutations synchronously publish the owned fragments before any translation", () => {
+  const { root, textNodes } = buildPdfDom();
+  const onSelectionChange = vi.fn();
+  const onSelectionMutation = vi.fn();
+  const onTranslate = vi.fn();
+  renderHook(() =>
+    usePdfSelection({
+      rootRef: rootRef(root),
+      documentSessionId: sessionId,
+      scale: 1,
+      onTranslate,
+      onSelectionChange,
+      onSelectionMutation,
+    }),
+  );
+
+  select(textNodes[0]);
+  fireEvent.mouseUp(root);
+
+  expect(onSelectionMutation).toHaveBeenCalledOnce();
+  expect(onSelectionChange).toHaveBeenCalledOnce();
+  expect(onSelectionChange.mock.calls[0][0]).toMatchObject([
+    { documentSessionId: sessionId, order: 0, text: "alpha" },
   ]);
   expect(onTranslate).not.toHaveBeenCalled();
 });
@@ -280,4 +313,28 @@ test("floating action forwards only the application-owned fragments", () => {
 
   expect(onTranslate).toHaveBeenCalledOnce();
   expect(onTranslate).toHaveBeenCalledWith(result.current.fragments);
+});
+
+test("floating action remains visible but disabled while translation is active", () => {
+  const selected = [
+    {
+      id: `${sessionId}:1`,
+      documentSessionId: sessionId,
+      order: 0,
+      text: "alpha",
+      spans: [],
+    },
+  ];
+
+  render(
+    <FloatingTranslateAction
+      fragments={selected}
+      onTranslate={vi.fn()}
+      disabled
+    />,
+  );
+
+  expect(
+    screen.getByRole("button", { name: "翻译所选文本" }),
+  ).toBeDisabled();
 });

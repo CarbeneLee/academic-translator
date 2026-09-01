@@ -25,6 +25,8 @@ const configuredDeepseekStatuses: CredentialSummary[] = [
   { kind: "youdao_app_secret", configured: false, maskedHint: null },
 ];
 
+const emptyCacheStats = { rowCount: 0, databaseBytes: 0 };
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -79,6 +81,9 @@ function expectStatusesThen(
       if (command === "credential_statuses") {
         return emptyStatuses;
       }
+      if (command === "cache_stats") {
+        return emptyCacheStats;
+      }
       return handler(command, argumentsValue);
     },
   );
@@ -93,6 +98,9 @@ test(
       async (command: string, argumentsValue: unknown) => {
         if (command === "credential_statuses") {
           return emptyStatuses;
+        }
+        if (command === "cache_stats") {
+          return emptyCacheStats;
         }
         if (command === "save_credential") {
           const argumentsRecord = argumentsValue as Record<string, unknown>;
@@ -158,6 +166,9 @@ test("tracks alternating-provider operations independently without losing the fi
     async (command: string, argumentsValue: unknown) => {
       if (command === "credential_statuses") {
         return emptyStatuses;
+      }
+      if (command === "cache_stats") {
+        return emptyCacheStats;
       }
       if (command === "save_credential") {
         const argumentsRecord = argumentsValue as Record<string, unknown>;
@@ -225,6 +236,9 @@ test("does not let a stale status response overwrite a newer save summary", asyn
       if (command === "credential_statuses") {
         return staleStatuses.promise;
       }
+      if (command === "cache_stats") {
+        return emptyCacheStats;
+      }
       if (command === "save_credential") {
         const argumentsRecord = argumentsValue as Record<string, unknown>;
         if (argumentsRecord.kind === "deepseek_api_key") {
@@ -263,6 +277,9 @@ test("does not show a stale status error after a newer save succeeds", async () 
     async (command: string, argumentsValue: unknown) => {
       if (command === "credential_statuses") {
         return staleStatuses.promise;
+      }
+      if (command === "cache_stats") {
+        return emptyCacheStats;
       }
       if (
         command === "save_credential" &&
@@ -307,6 +324,9 @@ test("does not let a stale status response overwrite a newer delete summary", as
       return statusCalls === 1
         ? configuredDeepseekStatuses
         : staleStatuses.promise;
+    }
+    if (command === "cache_stats") {
+      return emptyCacheStats;
     }
     if (command === "delete_credential") {
       return {
@@ -356,6 +376,9 @@ test("does not show a stale status error after a newer delete succeeds", async (
           return staleStatuses.promise;
         }
         throw new Error("unexpected credential_statuses call");
+      }
+      if (command === "cache_stats") {
+        return emptyCacheStats;
       }
       if (
         command === "delete_credential" &&
@@ -564,7 +587,9 @@ test("preserves the input after a real save failure for correction", async () =>
 });
 
 test("clears plaintext state when closing and after unmounting", async () => {
-  mockInvoke.mockResolvedValue(emptyStatuses);
+  expectStatusesThen((command) => {
+    throw new Error(`unexpected command: ${command}`);
+  });
   const user = userEvent.setup();
 
   function Harness() {
@@ -597,7 +622,9 @@ test("clears plaintext state when closing and after unmounting", async () => {
 });
 
 test("uses protected inputs with no reveal control and persists the provider preference", async () => {
-  mockInvoke.mockResolvedValue(emptyStatuses);
+  expectStatusesThen((command) => {
+    throw new Error(`unexpected command: ${command}`);
+  });
   const user = userEvent.setup();
   render(<SettingsDialog open onClose={() => undefined} />);
 
@@ -622,19 +649,102 @@ test("uses protected inputs with no reveal control and persists the provider pre
 });
 
 test("rejects malformed status IPC data without rendering it", async () => {
-  mockInvoke.mockResolvedValue([
-    {
-      kind: "deepseek_api_key",
-      configured: true,
-      maskedHint: "sk-••••••••A9f2",
-      plaintext: "must-not-render",
-    },
-  ]);
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "credential_statuses") {
+      return [
+        {
+          kind: "deepseek_api_key",
+          configured: true,
+          maskedHint: "sk-••••••••A9f2",
+          plaintext: "must-not-render",
+        },
+      ];
+    }
+    if (command === "cache_stats") {
+      return emptyCacheStats;
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
   render(<SettingsDialog open onClose={() => undefined} />);
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "无法读取凭据状态。",
   );
   expect(screen.queryByText("must-not-render")).not.toBeInTheDocument();
-  await waitFor(() => expect(mockInvoke).toHaveBeenCalledOnce());
+  await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+});
+
+test("shows strict cache usage and clears only after explicit confirmation", async () => {
+  let statsCalls = 0;
+  let clearCalls = 0;
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "credential_statuses") return emptyStatuses;
+    if (command === "cache_stats") {
+      statsCalls += 1;
+      return statsCalls === 1
+        ? { rowCount: 3, databaseBytes: 2048 }
+        : emptyCacheStats;
+    }
+    if (command === "clear_cache") {
+      clearCalls += 1;
+      return null;
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+  const confirm = vi
+    .spyOn(window, "confirm")
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  const user = userEvent.setup();
+  render(<SettingsDialog open onClose={() => undefined} />);
+
+  expect(await screen.findByText("3 条 · 2.0 KiB")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "清空翻译缓存" }));
+  expect(clearCalls).toBe(0);
+  expect(screen.getByText("3 条 · 2.0 KiB")).toBeVisible();
+
+  await user.click(screen.getByRole("button", { name: "清空翻译缓存" }));
+  expect(await screen.findByText("0 条 · 0 B")).toBeVisible();
+  expect(clearCalls).toBe(1);
+  expect(statsCalls).toBe(2);
+  expect(confirm).toHaveBeenCalledTimes(2);
+});
+
+test("rejects malformed cache stats without rendering private fields", async () => {
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "credential_statuses") return emptyStatuses;
+    if (command === "cache_stats") {
+      return {
+        rowCount: 2,
+        databaseBytes: 1024,
+        databasePath: "/private/cache.sqlite",
+      };
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+  render(<SettingsDialog open onClose={() => undefined} />);
+
+  expect(await screen.findByText("无法读取缓存状态。")).toBeVisible();
+  expect(screen.queryByText(/private\/cache|cache\.sqlite/i)).not.toBeInTheDocument();
+});
+
+test("controlled provider selection delegates to the shared app state", async () => {
+  expectStatusesThen((command) => {
+    throw new Error(`unexpected command: ${command}`);
+  });
+  const onProviderChange = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <SettingsDialog
+      open
+      onClose={() => undefined}
+      provider="deepseek"
+      onProviderChange={onProviderChange}
+    />,
+  );
+
+  await user.selectOptions(screen.getByLabelText("默认翻译服务"), "youdao");
+
+  expect(onProviderChange).toHaveBeenCalledOnce();
+  expect(onProviderChange).toHaveBeenCalledWith("youdao");
 });

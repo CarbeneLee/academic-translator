@@ -23,6 +23,8 @@ type UsePdfSelectionOptions = {
   documentSessionId: string | null;
   scale: number;
   onTranslate(fragments: SelectionFragment[]): void;
+  onSelectionChange?(fragments: SelectionFragment[]): void;
+  onSelectionMutation?(): void;
   isRequestActive?: boolean;
   onCancelActiveRequest?(): void;
 };
@@ -44,6 +46,8 @@ export function usePdfSelection({
   documentSessionId,
   scale,
   onTranslate,
+  onSelectionChange,
+  onSelectionMutation,
   isRequestActive = false,
   onCancelActiveRequest,
 }: UsePdfSelectionOptions) {
@@ -65,9 +69,11 @@ export function usePdfSelection({
       : [];
 
   const clearSelection = useCallback(() => {
+    onSelectionMutation?.();
+    onSelectionChange?.([]);
     dispatch({ type: "clear" });
     window.getSelection()?.removeAllRanges();
-  }, []);
+  }, [onSelectionChange, onSelectionMutation]);
 
   const registerTextLayer = useCallback(
     (pageIndex: number, textLayer: HTMLElement | null) => {
@@ -118,6 +124,9 @@ export function usePdfSelection({
       }
 
       fragmentSequenceRef.current += 1;
+      const nextFragments = event.altKey ? [...fragments, result] : [result];
+      onSelectionMutation?.();
+      onSelectionChange?.(nextFragments);
       dispatch({
         type: "capture",
         fragment: result,
@@ -128,7 +137,13 @@ export function usePdfSelection({
 
     root.addEventListener("mouseup", captureCurrentRange);
     return () => root.removeEventListener("mouseup", captureCurrentRange);
-  }, [documentSessionId, fragments.length, rootRef]);
+  }, [
+    documentSessionId,
+    fragments,
+    onSelectionChange,
+    onSelectionMutation,
+    rootRef,
+  ]);
 
   useEffect(() => {
     const root = rootRef.current;

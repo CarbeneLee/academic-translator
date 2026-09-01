@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  cacheStats,
+  clearCache,
+} from "../translation/ipc";
+import type { CacheStats } from "../translation/schemas";
+import {
   credentialStatuses,
   deleteCredential,
   saveCredential,
@@ -53,9 +58,13 @@ function perCredential<T>(value: T): Record<CredentialKind, T> {
 export function SettingsDialog({
   open,
   onClose,
+  provider,
+  onProviderChange,
 }: {
   open: boolean;
   onClose: () => void;
+  provider?: ProviderId;
+  onProviderChange?(provider: ProviderId): void;
 }) {
   const [inputs, setInputs] = useState(EMPTY_INPUTS);
   const [summaries, setSummaries] = useState<
@@ -65,6 +74,11 @@ export function SettingsDialog({
     perCredential(false),
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [cacheUsage, setCacheUsage] = useState<CacheStats | null>(null);
+  const [cacheErrorMessage, setCacheErrorMessage] = useState<string | null>(
+    null,
+  );
+  const [isCachePending, setIsCachePending] = useState(false);
   const [defaultProvider, setDefaultProvider] = useState<ProviderId>(
     () => loadPreferences().defaultProvider,
   );
@@ -74,6 +88,7 @@ export function SettingsDialog({
   );
   const statusGenerationsRef = useRef(perCredential(0));
   const statusRequestGenerationRef = useRef(0);
+  const cacheRequestGenerationRef = useRef(0);
 
   const isCurrentOperation = (kind: CredentialKind, generation: number) =>
     operationGenerationsRef.current[kind] === generation &&
@@ -155,10 +170,71 @@ export function SettingsDialog({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) {
+      setCacheErrorMessage(null);
+      return;
+    }
+
+    let active = true;
+    const generation = cacheRequestGenerationRef.current + 1;
+    cacheRequestGenerationRef.current = generation;
+    setIsCachePending(true);
+    setCacheErrorMessage(null);
+    void cacheStats()
+      .then((usage) => {
+        if (active && cacheRequestGenerationRef.current === generation) {
+          setCacheUsage(usage);
+        }
+      })
+      .catch(() => {
+        if (active && cacheRequestGenerationRef.current === generation) {
+          setCacheErrorMessage("无法读取缓存状态。");
+        }
+      })
+      .finally(() => {
+        if (active && cacheRequestGenerationRef.current === generation) {
+          setIsCachePending(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
   const close = () => {
     setInputs(EMPTY_INPUTS);
     setErrorMessage(null);
     onClose();
+  };
+
+  const clearTranslationCache = async () => {
+    if (
+      isCachePending ||
+      !window.confirm("确定清空本地翻译缓存吗？此操作无法撤销。")
+    ) {
+      return;
+    }
+
+    const generation = cacheRequestGenerationRef.current + 1;
+    cacheRequestGenerationRef.current = generation;
+    setIsCachePending(true);
+    setCacheErrorMessage(null);
+    try {
+      await clearCache();
+      const usage = await cacheStats();
+      if (cacheRequestGenerationRef.current === generation) {
+        setCacheUsage(usage);
+      }
+    } catch {
+      if (cacheRequestGenerationRef.current === generation) {
+        setCacheErrorMessage("无法清空缓存，请稍后重试。");
+      }
+    } finally {
+      if (cacheRequestGenerationRef.current === generation) {
+        setIsCachePending(false);
+      }
+    }
   };
 
   const save = async (kind: CredentialKind) => {
@@ -231,17 +307,44 @@ export function SettingsDialog({
         <label className="settingsProviderField">
           <span>默认翻译服务</span>
           <select
-            value={defaultProvider}
+            value={provider ?? defaultProvider}
             onChange={(event) => {
-              const provider = event.currentTarget.value as ProviderId;
-              saveDefaultProvider(provider);
-              setDefaultProvider(provider);
+              const nextProvider = event.currentTarget.value as ProviderId;
+              if (onProviderChange) {
+                onProviderChange(nextProvider);
+              } else {
+                saveDefaultProvider(nextProvider);
+                setDefaultProvider(nextProvider);
+              }
             }}
           >
             <option value="deepseek">DeepSeek V4 Flash</option>
             <option value="youdao">Youdao</option>
           </select>
         </label>
+
+        <section className="cacheSettings" aria-labelledby="cache-settings-title">
+          <h3 id="cache-settings-title">翻译缓存</h3>
+          <p className="cacheUsage" aria-live="polite">
+            {cacheUsage
+              ? `${cacheUsage.rowCount} 条 · ${formatBytes(cacheUsage.databaseBytes)}`
+              : isCachePending
+                ? "正在读取缓存用量…"
+                : "暂无缓存用量。"}
+          </p>
+          <button
+            type="button"
+            disabled={isCachePending}
+            onClick={() => void clearTranslationCache()}
+          >
+            清空翻译缓存
+          </button>
+          {cacheErrorMessage && (
+            <p className="cacheError" role="alert">
+              {cacheErrorMessage}
+            </p>
+          )}
+        </section>
 
         <div className="credentialSettings">
           {CREDENTIAL_FIELDS.map((field) => {
@@ -307,4 +410,14 @@ export function SettingsDialog({
       </section>
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }

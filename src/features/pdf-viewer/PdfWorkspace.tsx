@@ -91,7 +91,11 @@ function pagesAround(pageIndex: number, pageCount: number): Set<number> {
   return pages;
 }
 
-export function usePdfWorkspaceController() {
+export function usePdfWorkspaceController({
+  onDocumentSessionChange,
+}: {
+  onDocumentSessionChange?(documentSessionId: string | null): void;
+} = {}) {
   const [descriptor, setDescriptor] = useState<DocumentDescriptor | null>(null);
   const [pdfDocument, setPdfDocument] = useState<PDFDocumentProxy | null>(null);
   const [pages, setPages] = useState<PageRecord[]>([]);
@@ -107,6 +111,8 @@ export function usePdfWorkspaceController() {
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
   const pendingOpenRef = useRef<OpenOperation | null>(null);
+  const onDocumentSessionChangeRef = useRef(onDocumentSessionChange);
+  onDocumentSessionChangeRef.current = onDocumentSessionChange;
 
   const isCurrentOperation = useCallback((operation: OpenOperation) => {
     return (
@@ -122,6 +128,9 @@ export function usePdfWorkspaceController() {
     pendingOpenRef.current = null;
     const active = activeDocumentRef.current;
     activeDocumentRef.current = null;
+    if (active) {
+      onDocumentSessionChangeRef.current?.(null);
+    }
     setDescriptor(null);
     setPdfDocument(null);
     setPages([]);
@@ -195,6 +204,9 @@ export function usePdfWorkspaceController() {
       const previous = activeDocumentRef.current;
       activeDocumentRef.current = resources;
       pendingOpenRef.current = null;
+      onDocumentSessionChangeRef.current?.(
+        nextDescriptor.documentSessionId,
+      );
       setDescriptor(nextDescriptor);
       setPdfDocument(nextPdfDocument);
       setPages(nextPages);
@@ -361,11 +373,15 @@ export function PdfDocumentToolbar({
 export function PdfWorkspace({
   controller,
   onTranslate,
+  onSelectionChange,
+  onSelectionMutation,
   isRequestActive = false,
   onCancelActiveRequest,
 }: {
   controller: PdfWorkspaceController;
   onTranslate(fragments: SelectionFragment[]): void;
+  onSelectionChange?(fragments: SelectionFragment[]): void;
+  onSelectionMutation?(): void;
   isRequestActive?: boolean;
   onCancelActiveRequest?(): void;
 }) {
@@ -378,6 +394,8 @@ export function PdfWorkspace({
     documentSessionId: controller.descriptor?.documentSessionId ?? null,
     scale: controller.scale,
     onTranslate,
+    onSelectionChange,
+    onSelectionMutation,
     isRequestActive,
     onCancelActiveRequest,
   });
@@ -503,6 +521,7 @@ export function PdfWorkspace({
       <FloatingTranslateAction
         fragments={selection.fragments}
         onTranslate={onTranslate}
+        disabled={isRequestActive}
       />
     </div>
   );

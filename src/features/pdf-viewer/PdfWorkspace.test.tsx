@@ -182,3 +182,59 @@ describe.each<CancellationAction>(["close", "unmount"])(
     );
   },
 );
+
+test("cancelled native picker preserves the current document lifecycle", async () => {
+  const onDocumentSessionChange = vi.fn();
+  openMock.mockResolvedValue(null);
+  const { result, unmount } = renderHook(() =>
+    usePdfWorkspaceController({ onDocumentSessionChange }),
+  );
+
+  await act(async () => {
+    await result.current.open();
+  });
+
+  expect(onDocumentSessionChange).not.toHaveBeenCalled();
+  expect(result.current.descriptor).toBeNull();
+  expect(closeMock).not.toHaveBeenCalled();
+  unmount();
+});
+
+test("accepted document and explicit close synchronously publish session changes", async () => {
+  const onDocumentSessionChange = vi.fn();
+  const destroy = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const page = {
+    getViewport: vi.fn(() => ({ width: 612, height: 792 })),
+  } as unknown as PDFPageProxy;
+  const document = {
+    numPages: 1,
+    getPage: vi.fn().mockResolvedValue(page),
+  } as unknown as PDFDocumentProxy;
+  openMock.mockResolvedValue(descriptor);
+  readMock.mockResolvedValue(bytes);
+  loadMock.mockResolvedValue({ document, destroy });
+  closeMock.mockResolvedValue(undefined);
+  const { result, unmount } = renderHook(() =>
+    usePdfWorkspaceController({ onDocumentSessionChange }),
+  );
+
+  await act(async () => {
+    await result.current.open();
+  });
+
+  expect(onDocumentSessionChange).toHaveBeenNthCalledWith(
+    1,
+    descriptor.documentSessionId,
+  );
+  expect(result.current.descriptor).toEqual(descriptor);
+
+  await act(async () => {
+    await result.current.close();
+  });
+  expect(onDocumentSessionChange).toHaveBeenNthCalledWith(2, null);
+  expect(onDocumentSessionChange).toHaveBeenCalledTimes(2);
+  expect(result.current.descriptor).toBeNull();
+  expect(closeMock).toHaveBeenCalledOnce();
+  expect(destroy).toHaveBeenCalledOnce();
+  unmount();
+});

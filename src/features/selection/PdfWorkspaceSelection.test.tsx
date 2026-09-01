@@ -174,3 +174,36 @@ test("workspace keeps Alt captures discrete and clears them on document close", 
     screen.queryByRole("button", { name: "翻译所选文本" }),
   ).not.toBeInTheDocument();
 });
+
+test("workspace forwards selection lifecycle and disables only the active manual trigger", () => {
+  const onTranslate = vi.fn();
+  const onSelectionChange = vi.fn();
+  const onSelectionMutation = vi.fn();
+  const view = render(
+    <PdfWorkspace
+      controller={controller()}
+      onTranslate={onTranslate}
+      onSelectionChange={onSelectionChange}
+      onSelectionMutation={onSelectionMutation}
+      isRequestActive
+    />,
+  );
+  const pdfRoot = view.container.querySelector<HTMLElement>(
+    ".pdfPagesViewport",
+  );
+  if (!pdfRoot) {
+    throw new Error("expected PDF root");
+  }
+
+  selectText("alpha");
+  fireEvent.mouseUp(pdfRoot);
+
+  expect(onSelectionMutation).toHaveBeenCalledOnce();
+  expect(onSelectionChange).toHaveBeenCalledWith(
+    expect.arrayContaining([expect.objectContaining({ text: "alpha" })]),
+  );
+  expect(
+    screen.getByRole("button", { name: "翻译所选文本" }),
+  ).toBeDisabled();
+  expect(onTranslate).not.toHaveBeenCalled();
+});
