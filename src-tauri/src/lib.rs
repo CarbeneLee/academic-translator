@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod document;
 pub mod errors;
+pub mod providers;
 pub mod secrets;
 pub mod translation;
 

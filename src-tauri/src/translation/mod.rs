@@ -2,12 +2,14 @@ mod budget;
 mod cache_key;
 mod chunker;
 mod normalizer;
+mod provider;
 mod types;
 
 pub use budget::{derive_mode, output_budget};
 pub use cache_key::{cache_key, source_text_hash};
 pub use chunker::prepare_translation;
 pub use normalizer::normalize_fragments;
+pub use provider::{ProviderRequest, ProviderResult, TokenUsage, TranslationProvider};
 pub use types::{
     ModelMetadata, PreparedTranslation, ProviderId, SelectedFragmentInput, TranslationChunk,
     TranslationMode, CACHE_KEY_VERSION, NORMALIZATION_VERSION, SOURCE_LANGUAGE, TARGET_LANGUAGE,
