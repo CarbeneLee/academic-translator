@@ -10,7 +10,7 @@ use std::{
 use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::json;
-use tokio::time::timeout;
+use tokio::{sync::Notify, time::timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use wiremock::{
@@ -435,6 +435,40 @@ async fn rejects_more_than_4000_characters_before_credentials_or_network() {
 }
 
 #[tokio::test]
+async fn accepts_exactly_4000_unicode_scalars_with_two_credential_reads_and_one_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "errorCode": "0",
+            "translation": ["译文"]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let secret_store = Arc::new(YoudaoSecretStore::configured());
+    let provider = YoudaoProvider::for_test(
+        secret_store.clone(),
+        format!("{}/api", server.uri()),
+        Duration::from_secs(2),
+        Some(("salt".to_owned(), "1700000000".to_owned())),
+    )
+    .unwrap();
+
+    let result = provider
+        .translate(passage("β".repeat(4_000)), CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(result.translation, "译文");
+    assert_eq!(secret_store.gets.load(Ordering::SeqCst), 2);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(parse_form(&requests[0].body)["q"].chars().count(), 4_000);
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn generates_a_fresh_uuid_salt_for_each_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -477,31 +511,41 @@ async fn generates_a_fresh_uuid_salt_for_each_request() {
 #[tokio::test]
 async fn youdao_cancellation_is_bounded() {
     let server = MockServer::start().await;
+    let request_arrived = Arc::new(Notify::new());
+    let responder_arrived = request_arrived.clone();
+    let delayed_response = ResponseTemplate::new(200)
+        .set_delay(Duration::from_secs(2))
+        .set_body_json(json!({"errorCode": "0", "translation": ["译文"]}));
     Mock::given(method("POST"))
         .and(path("/api"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_delay(Duration::from_secs(2))
-                .set_body_json(json!({"errorCode": "0", "translation": ["译文"]})),
-        )
+        .respond_with(move |_: &wiremock::Request| {
+            responder_arrived.notify_one();
+            delayed_response.clone()
+        })
+        .expect(1)
         .mount(&server)
         .await;
     let provider = youdao_for(&server);
     let cancellation = CancellationToken::new();
-    let cancel = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        cancel.cancel();
+    let translate_cancellation = cancellation.clone();
+    let translation = tokio::spawn(async move {
+        provider
+            .translate(passage("source"), translate_cancellation)
+            .await
     });
 
-    let error = timeout(
-        Duration::from_secs(1),
-        provider.translate(passage("source"), cancellation),
-    )
-    .await
-    .expect("cancellation test exceeded its hard bound")
-    .unwrap_err();
+    timeout(Duration::from_secs(1), request_arrived.notified())
+        .await
+        .expect("request did not reach the Youdao mock within the hard bound");
+    cancellation.cancel();
+
+    let error = timeout(Duration::from_secs(1), translation)
+        .await
+        .expect("cancellation test exceeded its hard bound")
+        .expect("translation task panicked")
+        .unwrap_err();
     assert_eq!(error.code(), "REQUEST_CANCELLED");
+    server.verify().await;
 }
 
 #[tokio::test]
@@ -514,6 +558,7 @@ async fn youdao_total_timeout_is_bounded() {
                 .set_delay(Duration::from_millis(250))
                 .set_body_json(json!({"errorCode": "0", "translation": ["译文"]})),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let provider = YoudaoProvider::for_test(
@@ -532,4 +577,5 @@ async fn youdao_total_timeout_is_bounded() {
     .expect("timeout test exceeded its hard bound")
     .unwrap_err();
     assert_eq!(error.code(), "REQUEST_TIMEOUT");
+    server.verify().await;
 }

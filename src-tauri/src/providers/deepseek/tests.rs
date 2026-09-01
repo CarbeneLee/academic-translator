@@ -3,7 +3,7 @@ use std::{net::TcpListener, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use rstest::rstest;
 use serde_json::{json, Value};
-use tokio::time::timeout;
+use tokio::{sync::Notify, time::timeout};
 use tokio_util::sync::CancellationToken;
 use wiremock::{
     matchers::{body_json, header, method, path},
@@ -430,33 +430,76 @@ async fn rejects_more_than_4000_characters_before_credentials_or_network() {
 }
 
 #[tokio::test]
-async fn cancellation_is_bounded_and_stops_a_delayed_request() {
+async fn accepts_exactly_4000_unicode_scalars_with_one_credential_read_and_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_delay(Duration::from_secs(2))
                 .set_body_json(completed_response(r#"{"translation":"译文"}"#)),
         )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let secret_store = Arc::new(DeepseekSecretStore::with_key("test-key"));
+    let provider = DeepseekProvider::for_test(
+        secret_store.clone(),
+        format!("{}/responses", server.uri()),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    let result = provider
+        .translate(passage("β".repeat(4_000)), CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert_eq!(result.translation, "译文");
+    assert_eq!(
+        secret_store.gets.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn cancellation_is_bounded_and_stops_a_delayed_request() {
+    let server = MockServer::start().await;
+    let request_arrived = Arc::new(Notify::new());
+    let responder_arrived = request_arrived.clone();
+    let delayed_response = ResponseTemplate::new(200)
+        .set_delay(Duration::from_secs(2))
+        .set_body_json(completed_response(r#"{"translation":"译文"}"#));
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(move |_: &wiremock::Request| {
+            responder_arrived.notify_one();
+            delayed_response.clone()
+        })
+        .expect(1)
         .mount(&server)
         .await;
     let provider = deepseek_for(&server);
     let cancellation = CancellationToken::new();
-    let cancel = cancellation.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(25)).await;
-        cancel.cancel();
+    let translate_cancellation = cancellation.clone();
+    let translation = tokio::spawn(async move {
+        provider
+            .translate(passage("A result."), translate_cancellation)
+            .await
     });
 
-    let error = timeout(
-        Duration::from_secs(1),
-        provider.translate(passage("A result."), cancellation),
-    )
-    .await
-    .expect("cancellation test exceeded its hard bound")
-    .unwrap_err();
+    timeout(Duration::from_secs(1), request_arrived.notified())
+        .await
+        .expect("request did not reach the DeepSeek mock within the hard bound");
+    cancellation.cancel();
+
+    let error = timeout(Duration::from_secs(1), translation)
+        .await
+        .expect("cancellation test exceeded its hard bound")
+        .expect("translation task panicked")
+        .unwrap_err();
     assert_eq!(error.code(), "REQUEST_CANCELLED");
+    server.verify().await;
 }
 
 #[tokio::test]
@@ -469,6 +512,7 @@ async fn total_timeout_is_bounded() {
                 .set_delay(Duration::from_millis(250))
                 .set_body_json(completed_response(r#"{"translation":"译文"}"#)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let provider = DeepseekProvider::for_test(
@@ -486,4 +530,5 @@ async fn total_timeout_is_bounded() {
     .expect("timeout test exceeded its hard bound")
     .unwrap_err();
     assert_eq!(error.code(), "REQUEST_TIMEOUT");
+    server.verify().await;
 }
