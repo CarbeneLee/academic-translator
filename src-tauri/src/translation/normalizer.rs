@@ -45,7 +45,7 @@ fn normalize_fragment(source: &str) -> String {
 fn wrap_hyphen_pattern() -> &'static Regex {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     PATTERN.get_or_init(|| {
-        Regex::new(r"(\p{Alphabetic})-[ \t]*\n[ \t]*(\p{Alphabetic})")
+        Regex::new(r"\b(\p{Latin}{2,})-[ \t]*\n[ \t]*(\p{Latin}{2,})\b")
             .expect("the fixed wrap-hyphen regex must compile")
     })
 }

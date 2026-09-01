@@ -72,7 +72,30 @@ mod tests {
 
         assert_eq!(
             normalize_fragments(&fragments).unwrap(),
-            "A fine flow and ﬀ. next line\n\nco-\n\nordinate\n\n3- 4; αβ; E = mc² [7]."
+            "A fine flow and ﬀ. next line\n\nco-\n\nordinate\n\n3- 4; α- β; E = mc² [7]."
+        );
+    }
+
+    #[test]
+    fn repairs_only_multi_letter_latin_prose_wraps() {
+        let fragments = [fragment(0, "co-\nordinate; multi-\nmodal")];
+
+        assert_eq!(
+            normalize_fragments(&fragments).unwrap(),
+            "coordinate; multimodal"
+        );
+    }
+
+    #[test]
+    fn preserves_greek_mixed_script_and_single_letter_variable_hyphens() {
+        let fragments = [fragment(
+            0,
+            "α-\nβ; x-\ny; α-\nbeta; alpha-\nβ; x-\nvelocity; value-\ny",
+        )];
+
+        assert_eq!(
+            normalize_fragments(&fragments).unwrap(),
+            "α- β; x- y; α- beta; alpha- β; x- velocity; value- y"
         );
     }
 
