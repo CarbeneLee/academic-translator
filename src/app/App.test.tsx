@@ -178,6 +178,20 @@ async function openFirstPdf(user: ReturnType<typeof userEvent.setup>) {
   expect(await screen.findByText("alpha")).toBeVisible();
 }
 
+function hasExactDocumentSessionId(
+  value: unknown,
+  expectedDocumentSessionId: string,
+): value is { documentSessionId: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 1 &&
+    record.documentSessionId === expectedDocumentSessionId
+  );
+}
+
 type ReplacementBoundary = "read" | "load" | "page enumeration" | "failure";
 
 async function runAcceptedReplacementBoundary(
@@ -375,13 +389,10 @@ async function runAcceptedReplacementBoundary(
     staleTranslation.resolve(
       starts[0]
         ? resultFor(starts[0], "清理阶段的过期结果")
-        : (undefined as unknown),
+        : undefined,
     );
     settleBoundary();
     await Promise.allSettled([staleTranslation.promise, boundary.promise]);
-    await waitFor(() =>
-      expect(closeCounts.get(SECOND_DOCUMENT.documentSessionId)).toBe(1),
-    );
   }
 }
 
@@ -526,17 +537,81 @@ test.each([
   "%s rejects every extra or wrong shortcut modifier before IPC",
   async (_platformLabel, platform, invalidEvents) => {
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+    const handle = pdfHandle();
+    const openArguments: unknown[] = [];
+    const readArguments: unknown[] = [];
+    const loadArguments: Uint8Array[] = [];
+    const closeArguments: unknown[] = [];
+    const lifecycleOrder: string[] = [];
+    let openCalls = 0;
+    let readCalls = 0;
+    let loadCalls = 0;
+    let closeCalls = 0;
     let startCalls = 0;
+    mockLoadPdfDocument.mockImplementation((input: Uint8Array) => {
+      loadCalls += 1;
+      loadArguments.push(input);
+      if (
+        loadCalls !== 1 ||
+        lifecycleOrder.join(",") !== "open,read" ||
+        !(input instanceof Uint8Array) ||
+        input.length !== 4 ||
+        input.some((byte) => byte !== 0)
+      ) {
+        throw new Error(`unexpected PDF.js load ${loadCalls}`);
+      }
+      lifecycleOrder.push("load");
+      return Promise.resolve(handle);
+    });
     mockInvoke.mockImplementation(async (command: string, args: unknown) => {
-      if (command === "open_pdf_document") return FIRST_DOCUMENT;
-      if (command === "read_pdf_bytes") return new ArrayBuffer(4);
-      if (command === "close_pdf_document") return null;
+      if (command === "open_pdf_document") {
+        openCalls += 1;
+        openArguments.push(args);
+        if (
+          openCalls !== 1 ||
+          lifecycleOrder.length !== 0 ||
+          args !== undefined
+        ) {
+          throw new Error(`unexpected open_pdf_document ${openCalls}`);
+        }
+        lifecycleOrder.push("open");
+        return FIRST_DOCUMENT;
+      }
+      if (command === "read_pdf_bytes") {
+        readCalls += 1;
+        readArguments.push(args);
+        if (
+          readCalls !== 1 ||
+          lifecycleOrder.join(",") !== "open" ||
+          !hasExactDocumentSessionId(
+            args,
+            FIRST_DOCUMENT.documentSessionId,
+          )
+        ) {
+          throw new Error(`unexpected read_pdf_bytes ${readCalls}`);
+        }
+        lifecycleOrder.push("read");
+        return new ArrayBuffer(4);
+      }
+      if (command === "close_pdf_document") {
+        closeCalls += 1;
+        closeArguments.push(args);
+        if (
+          closeCalls !== 1 ||
+          lifecycleOrder.join(",") !== "open,read,load" ||
+          !hasExactDocumentSessionId(
+            args,
+            FIRST_DOCUMENT.documentSessionId,
+          )
+        ) {
+          throw new Error(`unexpected close_pdf_document ${closeCalls}`);
+        }
+        lifecycleOrder.push("close");
+        return null;
+      }
       if (command === "start_translation") {
         startCalls += 1;
-        if (startCalls > 1) {
-          throw new Error("unexpected repeated start_translation");
-        }
-        return resultFor(args as StartArguments);
+        throw new Error("forbidden start_translation");
       }
       throw new Error(`unexpected IPC command: ${command}`);
     });
@@ -559,6 +634,22 @@ test.each([
     } finally {
       view.unmount();
     }
+
+    expect(openCalls).toBe(1);
+    expect(openArguments).toEqual([undefined]);
+    expect(readCalls).toBe(1);
+    expect(readArguments).toEqual([
+      { documentSessionId: FIRST_DOCUMENT.documentSessionId },
+    ]);
+    expect(loadCalls).toBe(1);
+    expect(loadArguments).toHaveLength(1);
+    expect(Array.from(loadArguments[0])).toEqual([0, 0, 0, 0]);
+    expect(closeCalls).toBe(1);
+    expect(closeArguments).toEqual([
+      { documentSessionId: FIRST_DOCUMENT.documentSessionId },
+    ]);
+    expect(lifecycleOrder).toEqual(["open", "read", "load", "close"]);
+    expect(handle.destroy).toHaveBeenCalledOnce();
   },
 );
 
