@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   credentialStatuses,
   deleteCredential,
@@ -42,12 +42,12 @@ const EMPTY_INPUTS: Record<CredentialKind, string> = {
   youdao_app_secret: "",
 };
 
-function summariesByKind(
-  summaries: CredentialSummary[],
-): Partial<Record<CredentialKind, CredentialSummary>> {
-  return Object.fromEntries(
-    summaries.map((summary) => [summary.kind, summary]),
-  );
+function perCredential<T>(value: T): Record<CredentialKind, T> {
+  return {
+    deepseek_api_key: value,
+    youdao_app_id: value,
+    youdao_app_secret: value,
+  };
 }
 
 export function SettingsDialog({
@@ -61,30 +61,95 @@ export function SettingsDialog({
   const [summaries, setSummaries] = useState<
     Partial<Record<CredentialKind, CredentialSummary>>
   >({});
-  const [pendingKind, setPendingKind] = useState<CredentialKind | null>(null);
+  const [pendingByKind, setPendingByKind] = useState(() =>
+    perCredential(false),
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [defaultProvider, setDefaultProvider] = useState<ProviderId>(
     () => loadPreferences().defaultProvider,
   );
+  const operationGenerationsRef = useRef(perCredential(0));
+  const pendingOperationsRef = useRef<Record<CredentialKind, number | null>>(
+    perCredential(null),
+  );
+  const statusGenerationsRef = useRef(perCredential(0));
+  const statusRequestGenerationRef = useRef(0);
+
+  const isCurrentOperation = (kind: CredentialKind, generation: number) =>
+    operationGenerationsRef.current[kind] === generation &&
+    pendingOperationsRef.current[kind] === generation;
+
+  const beginOperation = (kind: CredentialKind): number | null => {
+    if (pendingOperationsRef.current[kind] !== null) {
+      return null;
+    }
+
+    const generation = operationGenerationsRef.current[kind] + 1;
+    operationGenerationsRef.current[kind] = generation;
+    pendingOperationsRef.current[kind] = generation;
+    statusGenerationsRef.current[kind] += 1;
+    setPendingByKind((current) => ({ ...current, [kind]: true }));
+    return generation;
+  };
+
+  const finishOperation = (kind: CredentialKind, generation: number) => {
+    if (!isCurrentOperation(kind, generation)) {
+      return;
+    }
+    pendingOperationsRef.current[kind] = null;
+    setPendingByKind((current) => ({ ...current, [kind]: false }));
+  };
 
   useEffect(() => {
     if (!open) {
       setInputs(EMPTY_INPUTS);
-      setPendingKind(null);
       setErrorMessage(null);
       return;
     }
 
     let active = true;
+    const requestGeneration = statusRequestGenerationRef.current + 1;
+    statusRequestGenerationRef.current = requestGeneration;
+    const statusGenerations = perCredential(0);
+    const operationGenerations = { ...operationGenerationsRef.current };
+    const wasPending = perCredential(false);
+    for (const { kind } of CREDENTIAL_FIELDS) {
+      const statusGeneration = statusGenerationsRef.current[kind] + 1;
+      statusGenerationsRef.current[kind] = statusGeneration;
+      statusGenerations[kind] = statusGeneration;
+      wasPending[kind] = pendingOperationsRef.current[kind] !== null;
+    }
     setErrorMessage(null);
     void credentialStatuses()
       .then((nextSummaries) => {
-        if (active) {
-          setSummaries(summariesByKind(nextSummaries));
+        if (
+          !active ||
+          statusRequestGenerationRef.current !== requestGeneration
+        ) {
+          return;
         }
+        setSummaries((current) => {
+          const next = { ...current };
+          for (const summary of nextSummaries) {
+            const { kind } = summary;
+            if (
+              !wasPending[kind] &&
+              pendingOperationsRef.current[kind] === null &&
+              operationGenerationsRef.current[kind] ===
+                operationGenerations[kind] &&
+              statusGenerationsRef.current[kind] === statusGenerations[kind]
+            ) {
+              next[kind] = summary;
+            }
+          }
+          return next;
+        });
       })
       .catch(() => {
-        if (active) {
+        if (
+          active &&
+          statusRequestGenerationRef.current === requestGeneration
+        ) {
           setErrorMessage("无法读取凭据状态。");
         }
       });
@@ -95,7 +160,6 @@ export function SettingsDialog({
 
   const close = () => {
     setInputs(EMPTY_INPUTS);
-    setPendingKind(null);
     setErrorMessage(null);
     onClose();
   };
@@ -107,30 +171,44 @@ export function SettingsDialog({
       return;
     }
 
-    setPendingKind(kind);
+    const generation = beginOperation(kind);
+    if (generation === null) {
+      return;
+    }
     setErrorMessage(null);
     try {
       const summary = await saveCredential(kind, value);
-      setInputs((current) => ({ ...current, [kind]: "" }));
-      setSummaries((current) => ({ ...current, [kind]: summary }));
+      if (isCurrentOperation(kind, generation)) {
+        setInputs((current) => ({ ...current, [kind]: "" }));
+        setSummaries((current) => ({ ...current, [kind]: summary }));
+      }
     } catch {
-      setErrorMessage("保存失败，请检查后重试。");
+      if (isCurrentOperation(kind, generation)) {
+        setErrorMessage("保存失败，请检查后重试。");
+      }
     } finally {
-      setPendingKind(null);
+      finishOperation(kind, generation);
     }
   };
 
   const remove = async (kind: CredentialKind) => {
-    setPendingKind(kind);
+    const generation = beginOperation(kind);
+    if (generation === null) {
+      return;
+    }
     setErrorMessage(null);
     try {
       const summary = await deleteCredential(kind);
-      setInputs((current) => ({ ...current, [kind]: "" }));
-      setSummaries((current) => ({ ...current, [kind]: summary }));
+      if (isCurrentOperation(kind, generation)) {
+        setInputs((current) => ({ ...current, [kind]: "" }));
+        setSummaries((current) => ({ ...current, [kind]: summary }));
+      }
     } catch {
-      setErrorMessage("删除失败，请稍后重试。");
+      if (isCurrentOperation(kind, generation)) {
+        setErrorMessage("删除失败，请稍后重试。");
+      }
     } finally {
-      setPendingKind(null);
+      finishOperation(kind, generation);
     }
   };
 
@@ -172,7 +250,7 @@ export function SettingsDialog({
           {CREDENTIAL_FIELDS.map((field) => {
             const summary = summaries[field.kind];
             const configured = summary?.configured === true;
-            const isPending = pendingKind === field.kind;
+            const isPending = pendingByKind[field.kind];
             return (
               <section className="credentialField" key={field.kind}>
                 <label>
@@ -181,8 +259,12 @@ export function SettingsDialog({
                     type="password"
                     autoComplete="off"
                     spellCheck={false}
+                    disabled={isPending}
                     value={inputs[field.kind]}
                     onChange={(event) => {
+                      if (pendingOperationsRef.current[field.kind] !== null) {
+                        return;
+                      }
                       const value = event.currentTarget.value;
                       setInputs((current) => ({
                         ...current,
