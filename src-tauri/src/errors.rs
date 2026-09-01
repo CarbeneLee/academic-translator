@@ -2,6 +2,24 @@ use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+pub enum AppError {
+    #[error("credential value is invalid")]
+    CredentialValueInvalid,
+    #[error("credential store is unavailable")]
+    CredentialStoreUnavailable,
+}
+
+impl AppError {
+    pub const fn credential_value_invalid() -> Self {
+        Self::CredentialValueInvalid
+    }
+
+    pub const fn credential_store_unavailable() -> Self {
+        Self::CredentialStoreUnavailable
+    }
+}
+
+#[derive(Debug, Error)]
 pub enum TranslationDomainError {
     #[error("selection is empty")]
     SelectionEmpty,
@@ -47,6 +65,21 @@ impl CommandError {
         Self {
             code: "DOCUMENT_READ_FAILED",
             message: "无法读取 PDF 文档。",
+        }
+    }
+}
+
+impl From<AppError> for CommandError {
+    fn from(error: AppError) -> Self {
+        match error {
+            AppError::CredentialValueInvalid => Self {
+                code: "CREDENTIAL_VALUE_INVALID",
+                message: "凭据不能为空。",
+            },
+            AppError::CredentialStoreUnavailable => Self {
+                code: "CREDENTIAL_STORE_UNAVAILABLE",
+                message: "无法访问系统凭据存储，请稍后重试。",
+            },
         }
     }
 }

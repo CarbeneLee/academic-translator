@@ -4,6 +4,7 @@ import {
   PdfWorkspace,
   usePdfWorkspaceController,
 } from "../features/pdf-viewer/PdfWorkspace";
+import { SettingsDialog } from "../features/settings/SettingsDialog";
 import "./App.css";
 
 const handleTranslateSelection = () => undefined;
@@ -11,6 +12,7 @@ const handleTranslateSelection = () => undefined;
 export function App() {
   const [isTranslationPanelCollapsed, setIsTranslationPanelCollapsed] =
     useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const pdfWorkspace = usePdfWorkspaceController();
 
   return (
@@ -19,6 +21,14 @@ export function App() {
     >
       <header className="topToolbar" role="toolbar" aria-label="论文阅读工具">
         <PdfDocumentToolbar controller={pdfWorkspace} />
+        <button
+          type="button"
+          aria-label="设置"
+          className="settingsEntry"
+          onClick={() => setIsSettingsOpen(true)}
+        >
+          设置
+        </button>
       </header>
 
       <nav className="toolRail" aria-label="PDF 工具栏" />
@@ -52,7 +62,12 @@ export function App() {
         )}
       </aside>
 
-      <div id="settings-dialog-root" className="settingsDialogRoot" />
+      <div id="settings-dialog-root" className="settingsDialogRoot">
+        <SettingsDialog
+          open={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+        />
+      </div>
       <footer className="statusBar" role="status" aria-label="阅读状态">
         {pdfWorkspace.status}
       </footer>

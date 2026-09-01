@@ -57,6 +57,15 @@ button {
   opacity: 0.45;
 }
 
+.topToolbar .settingsEntry {
+  margin-left: auto;
+}
+
+.pageNavigation + .settingsEntry,
+.documentName ~ .settingsEntry {
+  margin-left: 0;
+}
+
 .documentName {
   max-width: 260px;
   overflow: hidden;
@@ -249,6 +258,113 @@ button {
 
 .settingsDialogRoot {
   display: contents;
+}
+
+.settingsBackdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  padding: 40px;
+  overflow: auto;
+  background: rgb(18 29 37 / 42%);
+  place-items: center;
+}
+
+.settingsDialog {
+  width: min(620px, 100%);
+  max-height: 100%;
+  padding: 22px;
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #cfd8df;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgb(22 34 43 / 24%);
+}
+
+.settingsDialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.settingsDialogHeader h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.settingsDialogHeader button,
+.credentialActions button {
+  min-height: 32px;
+  color: #315369;
+  background: #edf3f7;
+  border: 1px solid #ccd9e1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.settingsDialogHeader button {
+  width: 32px;
+}
+
+.settingsProviderField,
+.credentialField label {
+  display: grid;
+  gap: 6px;
+  color: #394650;
+  font-size: 0.88rem;
+}
+
+.settingsProviderField select,
+.credentialField input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: #20252b;
+  background: #ffffff;
+  border: 1px solid #bdc9d2;
+  border-radius: 4px;
+}
+
+.credentialSettings {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.credentialField {
+  padding-top: 14px;
+  border-top: 1px solid #e2e8ed;
+}
+
+.credentialStatus,
+.credentialActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.credentialStatus {
+  min-height: 20px;
+  color: #687580;
+  font-size: 0.8rem;
+}
+
+.credentialActions button {
+  padding: 0 12px;
+}
+
+.credentialActions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settingsDialog [role="alert"] {
+  margin: 16px 0 0;
+  color: #a33232;
+  font-size: 0.85rem;
 }
 
 .statusBar {
