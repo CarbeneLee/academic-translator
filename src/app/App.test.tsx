@@ -80,15 +80,18 @@ const EMPTY_STATUSES = [
 
 type Deferred<T> = {
   promise: Promise<T>;
+  reject(reason: unknown): void;
   resolve(value: T): void;
 };
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function memoryStorage(): Storage {
@@ -173,6 +176,213 @@ function selectText(text: string): void {
 async function openFirstPdf(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "打开 PDF" }));
   expect(await screen.findByText("alpha")).toBeVisible();
+}
+
+type ReplacementBoundary = "read" | "load" | "page enumeration" | "failure";
+
+async function runAcceptedReplacementBoundary(
+  boundaryName: ReplacementBoundary,
+) {
+  const boundary = deferred<unknown>();
+  const staleTranslation = deferred<unknown>();
+  const firstHandle = pdfHandle();
+  const replacementPage = {
+    getViewport: vi.fn(() => ({ width: 612, height: 792 })),
+  } as unknown as PDFPageProxy;
+  const replacementGetPage = vi
+    .fn<(pageNumber: number) => Promise<PDFPageProxy>>()
+    .mockImplementation((pageNumber) => {
+      if (pageNumber !== 1) {
+        throw new Error(`unexpected replacement page ${pageNumber}`);
+      }
+      if (boundaryName === "page enumeration") {
+        return boundary.promise as Promise<PDFPageProxy>;
+      }
+      return Promise.resolve(replacementPage);
+    });
+  const replacementDestroy = vi
+    .fn<() => Promise<void>>()
+    .mockResolvedValue(undefined);
+  const replacementHandle = {
+    document: {
+      numPages: 1,
+      getPage: replacementGetPage,
+    } as unknown as PDFDocumentProxy,
+    destroy: replacementDestroy,
+  };
+  const starts: StartArguments[] = [];
+  const cancelled: string[] = [];
+  const closeCounts = new Map<string, number>();
+  let openCalls = 0;
+  let readCalls = 0;
+  let loadCalls = 0;
+
+  mockLoadPdfDocument.mockImplementation(() => {
+    loadCalls += 1;
+    if (loadCalls === 1) return Promise.resolve(firstHandle);
+    if (loadCalls !== 2) {
+      throw new Error(`unexpected PDF.js load ${loadCalls}`);
+    }
+    if (boundaryName === "load") {
+      return boundary.promise as Promise<typeof replacementHandle>;
+    }
+    return Promise.resolve(replacementHandle);
+  });
+  mockInvoke.mockImplementation((command: string, args: unknown) => {
+    if (command === "open_pdf_document") {
+      openCalls += 1;
+      if (openCalls === 1) return Promise.resolve(FIRST_DOCUMENT);
+      if (openCalls === 2) return Promise.resolve(SECOND_DOCUMENT);
+      throw new Error(`unexpected picker call ${openCalls}`);
+    }
+    if (command === "read_pdf_bytes") {
+      readCalls += 1;
+      const sessionId = (args as { documentSessionId: string })
+        .documentSessionId;
+      if (readCalls === 1 && sessionId === FIRST_DOCUMENT.documentSessionId) {
+        return Promise.resolve(new ArrayBuffer(4));
+      }
+      if (
+        readCalls === 2 &&
+        sessionId === SECOND_DOCUMENT.documentSessionId
+      ) {
+        if (boundaryName === "read" || boundaryName === "failure") {
+          return boundary.promise;
+        }
+        return Promise.resolve(new ArrayBuffer(4));
+      }
+      throw new Error(`unexpected read for ${sessionId}`);
+    }
+    if (command === "close_pdf_document") {
+      const sessionId = (args as { documentSessionId: string })
+        .documentSessionId;
+      if (
+        sessionId !== FIRST_DOCUMENT.documentSessionId &&
+        sessionId !== SECOND_DOCUMENT.documentSessionId
+      ) {
+        throw new Error(`unexpected close for ${sessionId}`);
+      }
+      const nextCount = (closeCounts.get(sessionId) ?? 0) + 1;
+      if (nextCount > 1) {
+        throw new Error(`duplicate close for ${sessionId}`);
+      }
+      closeCounts.set(sessionId, nextCount);
+      return Promise.resolve(null);
+    }
+    if (command === "start_translation") {
+      if (starts.length > 0) {
+        throw new Error("unexpected additional start_translation");
+      }
+      starts.push(args as StartArguments);
+      return staleTranslation.promise;
+    }
+    if (command === "cancel_translation") {
+      const requestId = (args as { requestId: string }).requestId;
+      if (cancelled.length > 0 || requestId !== starts[0]?.request.requestId) {
+        throw new Error(`unexpected cancellation for ${requestId}`);
+      }
+      cancelled.push(requestId);
+      return Promise.resolve(null);
+    }
+    throw new Error(`unexpected IPC command: ${command}`);
+  });
+
+  const user = userEvent.setup();
+  const view = render(<App />);
+  let unmounted = false;
+  const settleBoundary = () => {
+    if (boundaryName === "failure") {
+      boundary.reject(new Error("replacement read failed"));
+    } else if (boundaryName === "read") {
+      boundary.resolve(new ArrayBuffer(4));
+    } else if (boundaryName === "load") {
+      boundary.resolve(replacementHandle);
+    } else {
+      boundary.resolve(replacementPage);
+    }
+  };
+
+  try {
+    await openFirstPdf(user);
+    selectText("alpha");
+    await user.click(screen.getByRole("button", { name: "翻译所选文本" }));
+    await waitFor(() => expect(starts).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "打开 PDF" }));
+    if (boundaryName === "read" || boundaryName === "failure") {
+      await waitFor(() => expect(readCalls).toBe(2));
+    } else if (boundaryName === "load") {
+      await waitFor(() => expect(loadCalls).toBe(2));
+    } else {
+      await waitFor(() => expect(replacementGetPage).toHaveBeenCalledOnce());
+    }
+
+    expect(cancelled).toEqual([starts[0].request.requestId]);
+    expect(closeCounts.get(FIRST_DOCUMENT.documentSessionId)).toBe(1);
+    expect(closeCounts.get(SECOND_DOCUMENT.documentSessionId) ?? 0).toBe(0);
+    expect(firstHandle.destroy).toHaveBeenCalledOnce();
+    expect(replacementDestroy).not.toHaveBeenCalled();
+    expect(screen.queryByText("alpha")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "翻译所选文本" }),
+    ).not.toBeInTheDocument();
+    expect(document.querySelector(".pdfWorkspaceSelectionShell")).toBeNull();
+    expect(document.querySelector(".selectionHighlight")).toBeNull();
+    expect(screen.getByText("打开本地 PDF 开始阅读")).toBeVisible();
+    expect(screen.getByText("选择 PDF 文本后，手动触发翻译。")).toBeVisible();
+
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    expect(starts).toHaveLength(1);
+
+    await act(async () => {
+      staleTranslation.resolve(resultFor(starts[0], "过期替换结果"));
+      await staleTranslation.promise;
+    });
+    expect(screen.queryByText("过期替换结果")).not.toBeInTheDocument();
+
+    if (boundaryName === "failure") {
+      settleBoundary();
+      await act(async () => {
+        await boundary.promise.catch(() => undefined);
+      });
+      expect(
+        await screen.findByRole("status", { name: "阅读状态" }),
+      ).toHaveTextContent("无法打开 PDF，请重试。");
+      expect(screen.queryByText("alpha")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "翻译所选文本" }),
+      ).not.toBeInTheDocument();
+    } else {
+      view.unmount();
+      unmounted = true;
+      settleBoundary();
+      await act(async () => {
+        await boundary.promise;
+      });
+    }
+
+    await waitFor(() =>
+      expect(closeCounts.get(SECOND_DOCUMENT.documentSessionId)).toBe(1),
+    );
+    expect(firstHandle.destroy).toHaveBeenCalledOnce();
+    expect(replacementDestroy).toHaveBeenCalledTimes(
+      boundaryName === "load" || boundaryName === "page enumeration" ? 1 : 0,
+    );
+  } finally {
+    if (!unmounted) {
+      view.unmount();
+    }
+    staleTranslation.resolve(
+      starts[0]
+        ? resultFor(starts[0], "清理阶段的过期结果")
+        : (undefined as unknown),
+    );
+    settleBoundary();
+    await Promise.allSettled([staleTranslation.promise, boundary.promise]);
+    await waitFor(() =>
+      expect(closeCounts.get(SECOND_DOCUMENT.documentSessionId)).toBe(1),
+    );
+  }
 }
 
 beforeEach(() => {
@@ -286,6 +496,71 @@ test("platform shortcut is a single manual trigger", async () => {
   expect(startCalls).toBe(1);
   view.unmount();
 });
+
+test.each([
+  [
+    "macOS",
+    "MacIntel",
+    [
+      { key: "Enter", metaKey: true, altKey: true },
+      { key: "Enter", metaKey: true, shiftKey: true },
+      { key: "Enter", metaKey: true, altKey: true, shiftKey: true },
+      { key: "Enter", ctrlKey: true },
+      { key: "Enter", metaKey: true, ctrlKey: true },
+      { key: "Enter", metaKey: true, repeat: true },
+    ],
+  ],
+  [
+    "Windows",
+    "Win32",
+    [
+      { key: "Enter", ctrlKey: true, altKey: true },
+      { key: "Enter", ctrlKey: true, shiftKey: true },
+      { key: "Enter", ctrlKey: true, altKey: true, shiftKey: true },
+      { key: "Enter", metaKey: true },
+      { key: "Enter", ctrlKey: true, metaKey: true },
+      { key: "Enter", ctrlKey: true, repeat: true },
+    ],
+  ],
+] as const)(
+  "%s rejects every extra or wrong shortcut modifier before IPC",
+  async (_platformLabel, platform, invalidEvents) => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+    let startCalls = 0;
+    mockInvoke.mockImplementation(async (command: string, args: unknown) => {
+      if (command === "open_pdf_document") return FIRST_DOCUMENT;
+      if (command === "read_pdf_bytes") return new ArrayBuffer(4);
+      if (command === "close_pdf_document") return null;
+      if (command === "start_translation") {
+        startCalls += 1;
+        if (startCalls > 1) {
+          throw new Error("unexpected repeated start_translation");
+        }
+        return resultFor(args as StartArguments);
+      }
+      throw new Error(`unexpected IPC command: ${command}`);
+    });
+    const user = userEvent.setup();
+    const view = render(<App />);
+
+    try {
+      await openFirstPdf(user);
+      selectText("alpha");
+      for (const eventInit of invalidEvents) {
+        fireEvent.keyDown(window, eventInit);
+      }
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(startCalls).toBe(0);
+      expect(screen.getByRole("button", { name: "翻译所选文本" })).toBeEnabled();
+      expect(screen.getByText("选择 PDF 文本后，手动触发翻译。")).toBeVisible();
+    } finally {
+      view.unmount();
+    }
+  },
+);
 
 test("provider switch cancels active work, keeps fragments, and requires a new manual trigger", async () => {
   const first = deferred<unknown>();
@@ -425,6 +700,18 @@ test("cancelled picker preserves active selection while accepted replacement cle
   expect(screen.getByText("选择 PDF 文本后，手动触发翻译。")).toBeVisible();
   view.unmount();
 });
+
+test.each<ReplacementBoundary>([
+  "read",
+  "load",
+  "page enumeration",
+  "failure",
+])(
+  "accepted replacement invalidates document A before deferred %s settles",
+  async (boundaryName) => {
+    await runAcceptedReplacementBoundary(boundaryName);
+  },
+);
 
 const DOMAIN_ERROR_CASES = [
   ["AUTH_INVALID", false],

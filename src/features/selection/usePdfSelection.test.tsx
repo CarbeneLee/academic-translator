@@ -166,6 +166,76 @@ test("Ctrl+Enter calls onTranslate once on Windows", () => {
   expect(onTranslate).toHaveBeenCalledOnce();
 });
 
+const INVALID_PLATFORM_SHORTCUTS: ReadonlyArray<
+  readonly [string, string, string, KeyboardEventInit]
+> = [
+  ["macOS", "MacIntel", "Alt", { key: "Enter", metaKey: true, altKey: true }],
+  [
+    "macOS",
+    "MacIntel",
+    "Shift",
+    { key: "Enter", metaKey: true, shiftKey: true },
+  ],
+  [
+    "macOS",
+    "MacIntel",
+    "Alt+Shift",
+    { key: "Enter", metaKey: true, altKey: true, shiftKey: true },
+  ],
+  ["macOS", "MacIntel", "wrong primary", { key: "Enter", ctrlKey: true }],
+  [
+    "macOS",
+    "MacIntel",
+    "both primary modifiers",
+    { key: "Enter", metaKey: true, ctrlKey: true },
+  ],
+  ["macOS", "MacIntel", "repeat", { key: "Enter", metaKey: true, repeat: true }],
+  ["Windows", "Win32", "Alt", { key: "Enter", ctrlKey: true, altKey: true }],
+  [
+    "Windows",
+    "Win32",
+    "Shift",
+    { key: "Enter", ctrlKey: true, shiftKey: true },
+  ],
+  [
+    "Windows",
+    "Win32",
+    "Alt+Shift",
+    { key: "Enter", ctrlKey: true, altKey: true, shiftKey: true },
+  ],
+  ["Windows", "Win32", "wrong primary", { key: "Enter", metaKey: true }],
+  [
+    "Windows",
+    "Win32",
+    "both primary modifiers",
+    { key: "Enter", ctrlKey: true, metaKey: true },
+  ],
+  ["Windows", "Win32", "repeat", { key: "Enter", ctrlKey: true, repeat: true }],
+];
+
+test.each(INVALID_PLATFORM_SHORTCUTS)(
+  "%s (%s) rejects %s on Enter",
+  (_platformLabel, platform, _caseLabel, eventInit) => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+    const { root, textNodes } = buildPdfDom();
+    const onTranslate = vi.fn();
+    renderHook(() =>
+      usePdfSelection({
+        rootRef: rootRef(root),
+        documentSessionId: sessionId,
+        scale: 1,
+        onTranslate,
+      }),
+    );
+    select(textNodes[0]);
+    fireEvent.mouseUp(root);
+
+    fireEvent.keyDown(window, eventInit);
+
+    expect(onTranslate).not.toHaveBeenCalled();
+  },
+);
+
 test("Escape cancels an active request before it may clear selection", () => {
   const { root, textNodes } = buildPdfDom();
   const onCancelActiveRequest = vi.fn();

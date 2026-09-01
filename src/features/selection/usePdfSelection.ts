@@ -183,6 +183,8 @@ export function usePdfSelection({
       if (
         event.key !== "Enter" ||
         event.repeat ||
+        event.altKey ||
+        event.shiftKey ||
         fragments.length === 0
       ) {
         return;

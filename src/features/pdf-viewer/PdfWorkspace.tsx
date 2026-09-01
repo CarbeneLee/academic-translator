@@ -175,6 +175,18 @@ export function usePdfWorkspaceController({
         return;
       }
 
+      const previous = activeDocumentRef.current;
+      if (previous) {
+        activeDocumentRef.current = null;
+        onDocumentSessionChangeRef.current?.(null);
+        setDescriptor(null);
+        setPdfDocument(null);
+        setPages([]);
+        setScale(1);
+        setCurrentPage(1);
+        void releaseDocument(previous);
+      }
+
       const bytes = await readPdfBytes(nextDescriptor.documentSessionId);
       if (!isCurrentOperation(operation)) {
         await releaseDocument(resources);
@@ -201,7 +213,6 @@ export function usePdfWorkspaceController({
         return;
       }
 
-      const previous = activeDocumentRef.current;
       activeDocumentRef.current = resources;
       pendingOpenRef.current = null;
       onDocumentSessionChangeRef.current?.(
@@ -217,9 +228,6 @@ export function usePdfWorkspaceController({
         sequence: request.sequence + 1,
       }));
       setStatus(`${nextDescriptor.fileName} · ${nextPdfDocument.numPages} 页`);
-      if (previous) {
-        await releaseDocument(previous);
-      }
     } catch {
       const wasCurrent = isCurrentOperation(operation);
       if (pendingOpenRef.current === operation) {
