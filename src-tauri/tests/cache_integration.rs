@@ -1,6 +1,10 @@
 mod support;
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use academic_translator_lib::cache::{
     CachePolicy, Clock, SqliteTranslationCache, TranslationCache,
@@ -16,18 +20,29 @@ async fn open_cache(
     clock: impl Clock + 'static,
     policy: CachePolicy,
 ) -> SqliteTranslationCache {
-    SqliteTranslationCache::open_with_clock(path.to_path_buf(), policy, Arc::new(clock))
+    let parent = path
+        .parent()
+        .expect("test cache path has a parent")
+        .canonicalize()
+        .expect("test cache parent canonicalizes");
+    let path = parent.join(path.file_name().expect("test cache path has a file name"));
+    SqliteTranslationCache::open_with_clock(path, policy, Arc::new(clock))
         .await
         .expect("test cache opens")
 }
 
-fn user_schema_objects(path: &Path) -> Vec<(String, String)> {
+fn canonical_cache_path(directory: &tempfile::TempDir) -> PathBuf {
+    directory
+        .path()
+        .canonicalize()
+        .expect("isolated test directory canonicalizes")
+        .join("translation-cache.sqlite3")
+}
+
+fn schema_objects(path: &Path) -> Vec<(String, String)> {
     let connection = rusqlite::Connection::open(path).expect("test database opens");
     let mut statement = connection
-        .prepare(
-            "SELECT type, name FROM sqlite_schema \
-             WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name",
-        )
+        .prepare("SELECT type, name FROM sqlite_schema ORDER BY type, name")
         .expect("test schema query prepares");
     let objects = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -41,10 +56,45 @@ fn exact_v1_objects() -> Vec<(String, String)> {
     vec![
         (
             "index".to_owned(),
+            "sqlite_autoindex_translations_1".to_owned(),
+        ),
+        (
+            "index".to_owned(),
             "translations_last_accessed_idx".to_owned(),
         ),
         ("table".to_owned(), "translations".to_owned()),
     ]
+}
+
+fn table_columns(path: &Path) -> Vec<String> {
+    let connection = rusqlite::Connection::open(path).expect("test database opens");
+    let mut statement = connection
+        .prepare("PRAGMA table_info(translations)")
+        .expect("test column query prepares");
+    statement
+        .query_map([], |row| row.get(1))
+        .expect("test column query runs")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("test columns decode")
+}
+
+fn translation_index_columns(path: &Path) -> Vec<String> {
+    let connection = rusqlite::Connection::open(path).expect("test database opens");
+    let mut statement = connection
+        .prepare("PRAGMA index_info(translations_last_accessed_idx)")
+        .expect("test index query prepares");
+    statement
+        .query_map([], |row| row.get(2))
+        .expect("test index query runs")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("test index columns decode")
+}
+
+fn pragma_value(path: &Path, pragma: &str) -> i64 {
+    let connection = rusqlite::Connection::open(path).expect("test database opens");
+    connection
+        .pragma_query_value(None, pragma, |row| row.get(0))
+        .expect("test pragma query succeeds")
 }
 
 fn stored_cache_keys(path: &Path) -> Vec<String> {
@@ -59,6 +109,18 @@ fn stored_cache_keys(path: &Path) -> Vec<String> {
         .expect("test keys decode")
 }
 
+fn persisted_database_bytes(path: &Path) -> Vec<u8> {
+    [
+        path.to_path_buf(),
+        std::path::PathBuf::from(format!("{}-wal", path.display())),
+        std::path::PathBuf::from(format!("{}-shm", path.display())),
+    ]
+    .into_iter()
+    .filter_map(|candidate| std::fs::read(candidate).ok())
+    .flatten()
+    .collect()
+}
+
 #[tokio::test]
 async fn migration_has_the_exact_privacy_only_v1_schema() {
     let directory = tempdir().unwrap();
@@ -71,7 +133,7 @@ async fn migration_has_the_exact_privacy_only_v1_schema() {
     .await;
 
     assert_eq!(
-        cache.column_names("translations").await.unwrap(),
+        table_columns(&path),
         vec![
             "cache_key",
             "source_text_hash",
@@ -89,15 +151,11 @@ async fn migration_has_the_exact_privacy_only_v1_schema() {
             "output_tokens",
         ]
     );
-    assert_eq!(cache.schema_version().await.unwrap(), 1);
-    assert_eq!(cache.auto_vacuum_mode().await.unwrap(), 1);
-    assert_eq!(
-        cache
-            .index_columns("translations_last_accessed_idx")
-            .await
-            .unwrap(),
-        vec!["last_accessed_at"]
-    );
+    assert_eq!(pragma_value(&path, "user_version"), 1);
+    assert_eq!(pragma_value(&path, "auto_vacuum"), 1);
+    assert_eq!(translation_index_columns(&path), vec!["last_accessed_at"]);
+    assert_eq!(schema_objects(&path), exact_v1_objects());
+    assert_eq!(cache.stats().await.unwrap().row_count, 0);
 }
 
 #[tokio::test]
@@ -116,7 +174,7 @@ async fn version_zero_database_with_a_foreign_table_is_safely_reset_to_exact_v1(
     )
     .await;
 
-    assert_eq!(user_schema_objects(&path), exact_v1_objects());
+    assert_eq!(schema_objects(&path), exact_v1_objects());
     assert_eq!(cache.stats().await.unwrap().row_count, 0);
 }
 
@@ -147,8 +205,50 @@ async fn sqlite_confusable_user_object_is_not_mistaken_for_an_internal_object() 
     )
     .await;
 
-    assert_eq!(user_schema_objects(&path), exact_v1_objects());
+    assert_eq!(schema_objects(&path), exact_v1_objects());
     assert_eq!(reopened.stats().await.unwrap().row_count, 0);
+}
+
+#[tokio::test]
+async fn analyze_statistics_with_raw_content_force_a_safe_privacy_reset() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("translation-cache.sqlite3");
+    let cache = open_cache(
+        &path,
+        FakeClock::at(1_700_000_000),
+        CachePolicy::production(),
+    )
+    .await;
+    cache
+        .put(cache_record("analyze-privacy", "译文"))
+        .await
+        .unwrap();
+    drop(cache);
+    let forbidden = "UNMISTAKABLE RAW ENGLISH IN SQLITE STAT MUST VANISH";
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("ANALYZE; DELETE FROM sqlite_stat1;")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO sqlite_stat1(tbl, idx, stat) VALUES ('translations', NULL, ?1)",
+            [forbidden],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = open_cache(
+        &path,
+        FakeClock::at(1_700_000_001),
+        CachePolicy::production(),
+    )
+    .await;
+
+    assert_eq!(reopened.stats().await.unwrap().row_count, 0);
+    let persisted = persisted_database_bytes(&path);
+    assert!(!persisted
+        .windows(forbidden.len())
+        .any(|window| window == forbidden.as_bytes()));
 }
 
 #[tokio::test]
@@ -178,10 +278,7 @@ async fn pseudo_v1_with_an_extra_column_is_reset_instead_of_trusted() {
     )
     .await;
 
-    assert_eq!(
-        reopened.column_names("translations").await.unwrap().len(),
-        14
-    );
+    assert_eq!(table_columns(&path).len(), 14);
     assert_eq!(reopened.stats().await.unwrap().row_count, 0);
 }
 
@@ -212,7 +309,7 @@ async fn pseudo_v1_with_a_trigger_is_reset_to_the_allowed_objects_only() {
     )
     .await;
 
-    assert_eq!(user_schema_objects(&path), exact_v1_objects());
+    assert_eq!(schema_objects(&path), exact_v1_objects());
     assert_eq!(reopened.stats().await.unwrap().row_count, 0);
 }
 
@@ -248,14 +345,8 @@ async fn pseudo_v1_with_wrong_index_or_auto_vacuum_is_reset() {
         )
         .await;
 
-        assert_eq!(
-            reopened
-                .index_columns("translations_last_accessed_idx")
-                .await
-                .unwrap(),
-            vec!["last_accessed_at"]
-        );
-        assert_eq!(reopened.auto_vacuum_mode().await.unwrap(), 1);
+        assert_eq!(translation_index_columns(&path), vec!["last_accessed_at"]);
+        assert_eq!(pragma_value(&path, "auto_vacuum"), 1);
         assert_eq!(reopened.stats().await.unwrap().row_count, 0);
     }
 }
@@ -283,8 +374,8 @@ async fn valid_v1_reopen_is_idempotent_and_preserves_cached_rows() {
     )
     .await;
 
-    assert_eq!(user_schema_objects(&path), exact_v1_objects());
-    assert_eq!(reopened.schema_version().await.unwrap(), 1);
+    assert_eq!(schema_objects(&path), exact_v1_objects());
+    assert_eq!(pragma_value(&path, "user_version"), 1);
     assert_eq!(reopened.stats().await.unwrap().row_count, 1);
 }
 
@@ -294,19 +385,20 @@ async fn a_symlink_database_target_is_rejected_without_touching_its_target() {
     use std::os::unix::fs::symlink;
 
     let directory = tempdir().unwrap();
-    let external = directory.path().join("external.sqlite3");
+    let root = directory.path().canonicalize().unwrap();
+    let external = root.join("external.sqlite3");
     rusqlite::Connection::open(&external)
         .unwrap()
         .execute_batch("CREATE TABLE sentinel (value TEXT NOT NULL);")
         .unwrap();
-    let path = directory.path().join("translation-cache.sqlite3");
+    let path = root.join("translation-cache.sqlite3");
     symlink(&external, &path).unwrap();
 
     let cache = SqliteTranslationCache::open_or_unavailable(path, CachePolicy::production()).await;
 
     assert_eq!(cache.stats().await.unwrap_err().code(), "CACHE_UNAVAILABLE");
     assert_eq!(
-        user_schema_objects(&external),
+        schema_objects(&external),
         vec![("table".to_owned(), "sentinel".to_owned())]
     );
 }
@@ -318,7 +410,7 @@ async fn unsafe_sidecar_prevents_reset_and_leaves_both_targets_untouched() {
 
     for suffix in ["-wal", "-shm"] {
         let directory = tempdir().unwrap();
-        let path = directory.path().join("translation-cache.sqlite3");
+        let path = canonical_cache_path(&directory);
         let cache = open_cache(
             &path,
             FakeClock::at(1_700_000_000),
@@ -330,7 +422,11 @@ async fn unsafe_sidecar_prevents_reset_and_leaves_both_targets_untouched() {
             .unwrap()
             .execute_batch("ALTER TABLE translations ADD COLUMN rogue TEXT;")
             .unwrap();
-        let external = directory.path().join(format!("external{suffix}"));
+        let external = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(format!("external{suffix}"));
         std::fs::write(&external, b"sidecar sentinel").unwrap();
         let sidecar = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
         if sidecar.exists() {
@@ -360,10 +456,136 @@ async fn unsafe_sidecar_prevents_reset_and_leaves_both_targets_untouched() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn parent_and_ancestor_symlinks_disable_cache_without_touching_the_real_database() {
+    use std::os::unix::fs::symlink;
+
+    for nested_depth in [0_u8, 1_u8] {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let real_parent = root.join("real-parent");
+        std::fs::create_dir(&real_parent).unwrap();
+        let alias = root.join("linked-parent");
+        symlink(&real_parent, &alias).unwrap();
+
+        let (real_path, aliased_path) = if nested_depth == 0 {
+            (
+                real_parent.join("translation-cache.sqlite3"),
+                alias.join("translation-cache.sqlite3"),
+            )
+        } else {
+            std::fs::create_dir(real_parent.join("nested")).unwrap();
+            (
+                real_parent.join("nested/translation-cache.sqlite3"),
+                alias.join("nested/translation-cache.sqlite3"),
+            )
+        };
+        let cache = open_cache(
+            &real_path,
+            FakeClock::at(1_700_000_000),
+            CachePolicy::production(),
+        )
+        .await;
+        cache
+            .put(cache_record("linked-ancestor", "必须保留的译文"))
+            .await
+            .unwrap();
+        drop(cache);
+        let before = persisted_database_bytes(&real_path);
+
+        let unavailable =
+            SqliteTranslationCache::open_or_unavailable(aliased_path, CachePolicy::production())
+                .await;
+
+        assert_eq!(
+            unavailable.stats().await.unwrap_err().code(),
+            "CACHE_UNAVAILABLE",
+            "linked ancestor depth {nested_depth} must be rejected"
+        );
+        assert_eq!(persisted_database_bytes(&real_path), before);
+        assert_eq!(stored_cache_keys(&real_path).len(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn database_and_sidecar_hard_links_disable_cache_without_mutating_either_link() {
+    use std::os::unix::fs::MetadataExt;
+
+    {
+        let directory = tempdir().unwrap();
+        let path = canonical_cache_path(&directory);
+        let external = path.with_file_name("database-hard-link-sentinel");
+        std::fs::write(&external, b"database hard-link sentinel").unwrap();
+        std::fs::hard_link(&external, &path).unwrap();
+
+        let unavailable =
+            SqliteTranslationCache::open_or_unavailable(path.clone(), CachePolicy::production())
+                .await;
+
+        assert_eq!(
+            unavailable.stats().await.unwrap_err().code(),
+            "CACHE_UNAVAILABLE"
+        );
+        assert_eq!(
+            std::fs::read(&external).unwrap(),
+            b"database hard-link sentinel"
+        );
+        assert_eq!(std::fs::metadata(&external).unwrap().nlink(), 2);
+    }
+
+    for suffix in ["-wal", "-shm"] {
+        let directory = tempdir().unwrap();
+        let path = canonical_cache_path(&directory);
+        let cache = open_cache(
+            &path,
+            FakeClock::at(1_700_000_000),
+            CachePolicy::production(),
+        )
+        .await;
+        drop(cache);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("ALTER TABLE translations ADD COLUMN rogue TEXT;")
+            .unwrap();
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            std::fs::remove_file(&sidecar).unwrap();
+        }
+        let external = path.with_file_name(format!("sidecar-hard-link{suffix}"));
+        std::fs::write(&external, b"sidecar hard-link sentinel").unwrap();
+        std::fs::hard_link(&external, &sidecar).unwrap();
+
+        let unavailable =
+            SqliteTranslationCache::open_or_unavailable(path.clone(), CachePolicy::production())
+                .await;
+
+        assert_eq!(
+            unavailable.stats().await.unwrap_err().code(),
+            "CACHE_UNAVAILABLE"
+        );
+        assert_eq!(
+            std::fs::read(&external).unwrap(),
+            b"sidecar hard-link sentinel"
+        );
+        assert_eq!(std::fs::metadata(&external).unwrap().nlink(), 2);
+        let column_count = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('translations')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(column_count, 15, "unsafe sidecar forbids reset");
+    }
+}
+
 #[tokio::test]
 async fn a_directory_database_target_falls_back_disabled_without_removal() {
     let directory = tempdir().unwrap();
-    let path = directory.path().join("translation-cache.sqlite3");
+    let path = canonical_cache_path(&directory);
     std::fs::create_dir(&path).unwrap();
 
     let unavailable =
@@ -476,6 +698,66 @@ async fn cleanup_runs_on_initialization_and_after_every_successful_write() {
         reopened.get(&second_lookup).await.unwrap().is_none(),
         "startup cleanup removes expired rows"
     );
+}
+
+#[tokio::test]
+async fn startup_cleanup_removes_invalid_times_before_lru_can_evict_valid_data() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("translation-cache.sqlite3");
+    let now = 1_700_000_000;
+    let cache = open_cache(&path, FakeClock::at(now), CachePolicy::production()).await;
+    let fixtures = [
+        "valid-time",
+        "negative-created",
+        "created-after-access",
+        "future-access",
+    ];
+    let mut keys = Vec::new();
+    for (index, label) in fixtures.into_iter().enumerate() {
+        let record = cache_record(
+            label,
+            char::from(b'a' + u8::try_from(index).unwrap())
+                .to_string()
+                .repeat(12_000),
+        );
+        keys.push(record.cache_key.clone());
+        cache.put(record).await.unwrap();
+    }
+    drop(cache);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE translations SET created_at = -1 WHERE cache_key = ?1",
+            [&keys[1]],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE translations SET created_at = ?2, last_accessed_at = ?3 \
+             WHERE cache_key = ?1",
+            rusqlite::params![&keys[2], now + 1, now],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE translations SET last_accessed_at = ?2 WHERE cache_key = ?1",
+            rusqlite::params![&keys[3], now + 1],
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = open_cache(
+        &path,
+        FakeClock::at(now),
+        CachePolicy {
+            ttl: SEVEN_DAYS,
+            max_bytes: 64 * 1024,
+        },
+    )
+    .await;
+
+    assert_eq!(stored_cache_keys(&path), vec![keys[0].clone()]);
+    assert_eq!(reopened.stats().await.unwrap().row_count, 1);
 }
 
 #[tokio::test]
@@ -606,7 +888,7 @@ async fn same_clock_lru_uses_created_at_then_cache_key_as_deterministic_tie_brea
 #[tokio::test]
 async fn a_cap_below_empty_database_overhead_terminates_with_cache_unavailable() {
     let directory = tempdir().unwrap();
-    let path = directory.path().join("translation-cache.sqlite3");
+    let path = canonical_cache_path(&directory);
     let open = SqliteTranslationCache::open_with_clock(
         path.clone(),
         CachePolicy {

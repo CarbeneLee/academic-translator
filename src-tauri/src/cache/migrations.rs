@@ -27,11 +27,10 @@ pub(crate) fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
         connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     match version {
         0 => {
-            let user_object_count = connection.query_row(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?;
+            let user_object_count =
+                connection.query_row("SELECT COUNT(*) FROM sqlite_schema", [], |row| {
+                    row.get::<_, i64>(0)
+                })?;
             if user_object_count != 0 {
                 return Err(rusqlite::Error::InvalidQuery);
             }

@@ -41,3 +41,6 @@ zeroize = "1.9.0"
 rstest = "0.26.1"
 tempfile = "3.23.0"
 wiremock = "0.6.5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }

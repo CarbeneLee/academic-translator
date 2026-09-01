@@ -27,6 +27,7 @@ dependencies = [
  "tokio-util",
  "unicode-segmentation",
  "uuid",
+ "windows-sys 0.61.2",
  "wiremock",
  "zeroize",
 ]

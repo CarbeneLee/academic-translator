@@ -59,14 +59,6 @@ impl RequestRegistry {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.inner
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
-    }
-
     fn remove_if_current(&self, request_id: Uuid, registration_id: Uuid) {
         let mut entries = self
             .inner
@@ -99,5 +91,53 @@ impl Drop for RequestRegistration {
     fn drop(&mut self) {
         self.registry
             .remove_if_current(self.request_id, self.registration_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry_count(registry: &RequestRegistry) -> usize {
+        registry
+            .inner
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    #[test]
+    fn registration_guard_removes_the_current_entry_on_every_drop_path() {
+        let registry = RequestRegistry::default();
+        let request_id = Uuid::new_v4();
+
+        let registration = registry.register(request_id);
+        assert_eq!(entry_count(&registry), 1);
+        drop(registration);
+
+        assert_eq!(entry_count(&registry), 0);
+    }
+
+    #[test]
+    fn stale_guard_cannot_remove_a_same_id_replacement() {
+        let registry = RequestRegistry::default();
+        let request_id = Uuid::new_v4();
+        let older = registry.register(request_id);
+        let older_token = older.token();
+
+        let replacement = registry.register(request_id);
+        let replacement_token = replacement.token();
+        assert!(older_token.is_cancelled());
+        assert!(!replacement_token.is_cancelled());
+        assert_eq!(entry_count(&registry), 1);
+
+        drop(older);
+        assert_eq!(entry_count(&registry), 1);
+        registry.cancel(request_id);
+        assert!(replacement_token.is_cancelled());
+
+        drop(replacement);
+        assert_eq!(entry_count(&registry), 0);
     }
 }

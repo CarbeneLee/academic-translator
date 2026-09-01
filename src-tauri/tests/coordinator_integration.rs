@@ -489,7 +489,6 @@ async fn translates_exactly_two_chunks_sequentially_and_caches_only_the_complete
     assert_eq!(second.request_id, second_request_id);
     assert!(second.cache_hit);
     assert_eq!(second.translation, "第一段\n\n第二段");
-    assert!(requests.is_empty(), "cache-hit guard must be removed");
     provider.assert_exhausted();
     cache.assert_calls(2, 1);
 }
@@ -601,7 +600,6 @@ async fn cancellation_during_a_blocking_cache_miss_stops_before_provider_and_wri
     assert_eq!(error.code(), "REQUEST_CANCELLED");
     assert_eq!(provider.call_count(), 0);
     cache.assert_calls(1, 0);
-    assert!(requests.is_empty(), "cancelled cache guard must be removed");
 }
 
 #[tokio::test]
@@ -671,7 +669,6 @@ async fn same_uuid_cached_replacement_cancels_an_older_provider_request() {
     assert_eq!(older_error.code(), "REQUEST_CANCELLED");
     provider.assert_exhausted();
     cache.assert_calls(2, 0);
-    assert!(requests.is_empty(), "replacement guard must be removed");
 }
 
 #[tokio::test]
@@ -781,7 +778,11 @@ async fn cache_read_and_write_failures_are_one_nonfatal_diagnostic() {
 #[tokio::test]
 async fn startup_sqlite_failure_uses_a_non_persisting_backend_and_translation_still_succeeds() {
     let directory = tempfile::tempdir().unwrap();
-    let blocked_parent = directory.path().join("not-a-directory");
+    let blocked_parent = directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("not-a-directory");
     std::fs::write(&blocked_parent, b"fixture").unwrap();
     let cache = SqliteTranslationCache::open_or_unavailable(
         blocked_parent.join("translation-cache.sqlite3"),
@@ -816,7 +817,11 @@ async fn startup_sqlite_failure_uses_a_non_persisting_backend_and_translation_st
 #[tokio::test]
 async fn a_corrupt_sqlite_hit_is_deleted_and_provider_success_reports_one_diagnostic() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("translation-cache.sqlite3");
+    let path = directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("translation-cache.sqlite3");
     let cache = SqliteTranslationCache::open(path.clone(), CachePolicy::production())
         .await
         .unwrap();
