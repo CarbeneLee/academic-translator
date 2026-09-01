@@ -257,6 +257,47 @@ test("does not let a stale status response overwrite a newer save summary", asyn
   ).toBeVisible();
 });
 
+test("does not show a stale status error after a newer save succeeds", async () => {
+  const staleStatuses = deferred<CredentialSummary[]>();
+  mockInvoke.mockImplementation(
+    async (command: string, argumentsValue: unknown) => {
+      if (command === "credential_statuses") {
+        return staleStatuses.promise;
+      }
+      if (
+        command === "save_credential" &&
+        JSON.stringify(argumentsValue) ===
+          JSON.stringify({
+            kind: "deepseek_api_key",
+            value: "sk-first-secret-A9f2",
+          })
+      ) {
+        return {
+          kind: "deepseek_api_key",
+          configured: true,
+          maskedHint: "sk-••••••••A9f2",
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  );
+  render(<SettingsDialog open onClose={() => undefined} />);
+
+  fireEvent.change(screen.getByLabelText("DeepSeek API Key"), {
+    target: { value: "sk-first-secret-A9f2" },
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "保存 DeepSeek Key" }),
+  );
+  expect(await screen.findByText("sk-••••••••A9f2")).toBeVisible();
+
+  await act(async () => {
+    staleStatuses.reject(new Error("stale status failure"));
+  });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByText("sk-••••••••A9f2")).toBeVisible();
+});
+
 test("does not let a stale status response overwrite a newer delete summary", async () => {
   const staleStatuses = deferred<CredentialSummary[]>();
   let statusCalls = 0;
@@ -295,6 +336,60 @@ test("does not let a stale status response overwrite a newer delete summary", as
   await act(async () => {
     staleStatuses.resolve(configuredDeepseekStatuses);
   });
+  expect(
+    screen.queryByRole("button", { name: "删除 DeepSeek Key" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("sk-••••••••A9f2")).not.toBeInTheDocument();
+});
+
+test("does not show a stale status error after a newer delete succeeds", async () => {
+  const staleStatuses = deferred<CredentialSummary[]>();
+  let statusCalls = 0;
+  mockInvoke.mockImplementation(
+    async (command: string, argumentsValue: unknown) => {
+      if (command === "credential_statuses") {
+        statusCalls += 1;
+        if (statusCalls === 1) {
+          return configuredDeepseekStatuses;
+        }
+        if (statusCalls === 2) {
+          return staleStatuses.promise;
+        }
+        throw new Error("unexpected credential_statuses call");
+      }
+      if (
+        command === "delete_credential" &&
+        JSON.stringify(argumentsValue) ===
+          JSON.stringify({ kind: "deepseek_api_key" })
+      ) {
+        return {
+          kind: "deepseek_api_key",
+          configured: false,
+          maskedHint: null,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  );
+  render(<DialogHarness />);
+
+  expect(await screen.findByText("sk-••••••••A9f2")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
+  fireEvent.click(screen.getByRole("button", { name: "reopen" }));
+  await waitFor(() => expect(statusCalls).toBe(2));
+  fireEvent.click(
+    screen.getByRole("button", { name: "删除 DeepSeek Key" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "删除 DeepSeek Key" }),
+    ).not.toBeInTheDocument(),
+  );
+
+  await act(async () => {
+    staleStatuses.reject(new Error("stale status failure"));
+  });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(
     screen.queryByRole("button", { name: "删除 DeepSeek Key" }),
   ).not.toBeInTheDocument();

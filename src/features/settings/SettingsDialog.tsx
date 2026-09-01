@@ -119,12 +119,18 @@ export function SettingsDialog({
       statusGenerations[kind] = statusGeneration;
       wasPending[kind] = pendingOperationsRef.current[kind] !== null;
     }
+    const isCurrentStatusFor = (kind: CredentialKind) =>
+      active &&
+      statusRequestGenerationRef.current === requestGeneration &&
+      !wasPending[kind] &&
+      pendingOperationsRef.current[kind] === null &&
+      operationGenerationsRef.current[kind] === operationGenerations[kind] &&
+      statusGenerationsRef.current[kind] === statusGenerations[kind];
     setErrorMessage(null);
     void credentialStatuses()
       .then((nextSummaries) => {
         if (
-          !active ||
-          statusRequestGenerationRef.current !== requestGeneration
+          !CREDENTIAL_FIELDS.some(({ kind }) => isCurrentStatusFor(kind))
         ) {
           return;
         }
@@ -132,13 +138,7 @@ export function SettingsDialog({
           const next = { ...current };
           for (const summary of nextSummaries) {
             const { kind } = summary;
-            if (
-              !wasPending[kind] &&
-              pendingOperationsRef.current[kind] === null &&
-              operationGenerationsRef.current[kind] ===
-                operationGenerations[kind] &&
-              statusGenerationsRef.current[kind] === statusGenerations[kind]
-            ) {
+            if (isCurrentStatusFor(kind)) {
               next[kind] = summary;
             }
           }
@@ -146,10 +146,7 @@ export function SettingsDialog({
         });
       })
       .catch(() => {
-        if (
-          active &&
-          statusRequestGenerationRef.current === requestGeneration
-        ) {
+        if (CREDENTIAL_FIELDS.every(({ kind }) => isCurrentStatusFor(kind))) {
           setErrorMessage("无法读取凭据状态。");
         }
       });
