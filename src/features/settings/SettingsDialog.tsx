@@ -357,6 +357,7 @@ export function SettingsDialog({
                   <span>{field.inputLabel}</span>
                   <input
                     type="password"
+                    maxLength={4096}
                     autoComplete="off"
                     spellCheck={false}
                     disabled={isPending}

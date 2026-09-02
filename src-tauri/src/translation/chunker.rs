@@ -130,9 +130,7 @@ fn whitespace_boundaries(window: &[char]) -> Vec<usize> {
 
 fn choose_near_target(boundaries: Vec<usize>) -> Option<usize> {
     boundaries
-        .iter()
-        .copied()
-        .find(|boundary| *boundary >= CHUNK_TARGET_CHARS)
-        .or_else(|| boundaries.last().copied())
+        .into_iter()
         .filter(|boundary| *boundary > 0 && *boundary <= CHUNK_MAX_CHARS)
+        .min_by_key(|boundary| (boundary.abs_diff(CHUNK_TARGET_CHARS), *boundary))
 }

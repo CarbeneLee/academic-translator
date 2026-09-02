@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
@@ -434,6 +435,43 @@ test("renders the approved shell regions and functional PDF controls", async () 
   await user.click(screen.getByRole("button", { name: "设置" }));
   expect(screen.getByRole("dialog", { name: "设置" })).toBeVisible();
   expect(screen.queryByText(/聊天|笔记|OCR/)).not.toBeInTheDocument();
+});
+
+test("top toolbar shows the initial DeepSeek provider", () => {
+  render(<App />);
+
+  const toolbar = screen.getByRole("toolbar", { name: "论文阅读工具" });
+  expect(within(toolbar).getByLabelText("工具栏当前翻译服务")).toHaveTextContent(
+    "DeepSeek V4 Flash",
+  );
+});
+
+test("top toolbar provider label follows a provider switch", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+
+  await user.selectOptions(screen.getByLabelText("当前翻译服务"), "youdao");
+
+  const toolbar = screen.getByRole("toolbar", { name: "论文阅读工具" });
+  expect(within(toolbar).getByLabelText("工具栏当前翻译服务")).toHaveTextContent(
+    "有道",
+  );
+});
+
+test("top toolbar keeps the current provider visible while the panel is collapsed", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.selectOptions(screen.getByLabelText("当前翻译服务"), "youdao");
+
+  await user.click(screen.getByRole("button", { name: "收起翻译面板" }));
+
+  const toolbar = screen.getByRole("toolbar", { name: "论文阅读工具" });
+  expect(within(toolbar).getByLabelText("工具栏当前翻译服务")).toHaveTextContent(
+    "有道",
+  );
+  expect(
+    screen.queryByRole("combobox", { name: "当前翻译服务" }),
+  ).not.toBeInTheDocument();
 });
 
 test("selection stays local until floating action, then success supports cache warning and safe copy", async () => {

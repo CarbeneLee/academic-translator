@@ -59,7 +59,8 @@ offline; it does not download the font or any document.
 Save the DeepSeek API Key and Youdao App Secret in Settings. The trusted core
 stores them in macOS Keychain or Windows Credential Manager. The WebView receives
 only configured state and a masked hint, never a saved full secret. There is no
-reveal action.
+reveal action. Rust accepts at most 4096 Unicode scalar values per credential;
+the password inputs mirror that limit with a 4096 UTF-16 code-unit boundary.
 
 Do not put API keys or app secrets in source, logs, screenshots, environment
 files, test fixtures, or commits. The application does not require an `.env`
@@ -88,7 +89,9 @@ git diff --check
 ```
 
 Rust provider integration tests bind only bounded loopback mock servers. They do
-not contact DeepSeek or Youdao.
+not contact DeepSeek or Youdao. Both provider adapters reject cumulative
+response bodies above 262144 bytes, including chunked responses with no known
+length.
 
 ## Unsigned internal packages
 

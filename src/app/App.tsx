@@ -26,6 +26,7 @@ export function App() {
     null,
   );
   const [fragments, setFragments] = useState<SelectionFragment[]>([]);
+  const providerLabel = provider === "deepseek" ? "DeepSeek V4 Flash" : "有道";
   const translation = useTranslationController({
     documentSessionId,
     provider,
@@ -61,6 +62,12 @@ export function App() {
     >
       <header className="topToolbar" role="toolbar" aria-label="论文阅读工具">
         <PdfDocumentToolbar controller={pdfWorkspace} />
+        <span
+          className="toolbarProviderStatus"
+          aria-label="工具栏当前翻译服务"
+        >
+          {providerLabel}
+        </span>
         <button
           type="button"
           aria-label="设置"

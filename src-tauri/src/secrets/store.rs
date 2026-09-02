@@ -10,12 +10,13 @@ use crate::errors::AppError;
 use super::CredentialKind;
 
 const KEYRING_SERVICE: &str = "com.carbene.academic-translator";
+pub const MAX_CREDENTIAL_SCALARS: usize = 4_096;
 
 pub struct SecretValue(SecretString);
 
 impl SecretValue {
     pub fn new(mut value: String) -> Result<Self, AppError> {
-        if value.trim().is_empty() {
+        if value.trim().is_empty() || value.chars().count() > MAX_CREDENTIAL_SCALARS {
             value.zeroize();
             return Err(AppError::credential_value_invalid());
         }

@@ -32,6 +32,8 @@ use super::{
     YoudaoProvider,
 };
 
+const RESPONSE_BODY_LIMIT_BYTES: usize = 262_144;
+
 struct YoudaoSecretStore {
     app_id: Option<&'static str>,
     app_secret: Option<&'static str>,
@@ -383,6 +385,38 @@ async fn rejects_malformed_youdao_json_without_exposing_it() {
     .unwrap_err();
     assert_eq!(error.code(), "MALFORMED_RESPONSE");
     assert!(!format!("{error:?}").contains("not-json"));
+}
+
+#[tokio::test]
+async fn rejects_chunked_unknown_length_body_above_262144_bytes_after_one_request() {
+    let server = MockServer::start().await;
+    let mut oversized = serde_json::to_vec(&json!({
+        "errorCode": "0",
+        "translation": ["译文"]
+    }))
+    .unwrap();
+    oversized.resize(RESPONSE_BODY_LIMIT_BYTES + 1, b' ');
+    Mock::given(method("POST"))
+        .and(path("/api"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("transfer-encoding", "chunked")
+                .set_body_raw(oversized, "application/json"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = timeout(
+        Duration::from_secs(2),
+        youdao_for(&server).translate(passage("source"), CancellationToken::new()),
+    )
+    .await
+    .expect("oversized Youdao body test exceeded its hard bound")
+    .unwrap_err();
+
+    assert_eq!(error.code(), "MALFORMED_RESPONSE");
+    server.verify().await;
 }
 
 #[rstest]

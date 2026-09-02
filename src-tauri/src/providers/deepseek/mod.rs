@@ -18,6 +18,7 @@ use crate::{
 };
 
 use self::{request::build_request, response::parse_response};
+use super::response_body::read_bounded_response_body;
 
 pub const DEEPSEEK_MODEL_ID: &str = "deepseek-v4-flash";
 pub const DEEPSEEK_MODEL_REVISION: &str = "DeepSeek-V4-Flash-0731";
@@ -138,18 +139,7 @@ impl TranslationProvider for DeepseekProvider {
         };
 
         map_http_status(response.status())?;
-        let body = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(AppError::request_cancelled()),
-            result = tokio::time::timeout_at(deadline, response.bytes()) => {
-                match result {
-                    Ok(Ok(body)) => body,
-                    Ok(Err(error)) if error.is_timeout() => return Err(AppError::request_timeout()),
-                    Ok(Err(_)) => return Err(AppError::network_unavailable(false)),
-                    Err(_) => return Err(AppError::request_timeout()),
-                }
-            }
-        };
+        let body = read_bounded_response_body(response, deadline, &cancellation).await?;
 
         let (translation, usage) = parse_response(&body, request.selected_text.chars().count())?;
         Ok(ProviderResult {

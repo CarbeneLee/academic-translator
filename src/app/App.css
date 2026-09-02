@@ -58,11 +58,17 @@ button {
 }
 
 .topToolbar .settingsEntry {
-  margin-left: auto;
+  margin-left: 0;
 }
 
-.pageNavigation + .settingsEntry,
-.documentName ~ .settingsEntry {
+.toolbarProviderStatus {
+  margin-left: auto;
+  color: #dbe5eb;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.documentName ~ .toolbarProviderStatus {
   margin-left: 0;
 }
 

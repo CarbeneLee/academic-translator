@@ -648,6 +648,22 @@ test("uses protected inputs with no reveal control and persists the provider pre
   );
 });
 
+test("every credential input enforces the 4096 UTF-16 code-unit browser boundary", async () => {
+  expectStatusesThen((command) => {
+    throw new Error(`unexpected command: ${command}`);
+  });
+  render(<SettingsDialog open onClose={() => undefined} />);
+
+  for (const label of [
+    "DeepSeek API Key",
+    "Youdao App ID",
+    "Youdao App Secret",
+  ]) {
+    const input = await screen.findByLabelText<HTMLInputElement>(label);
+    expect(input.maxLength).toBe(4_096);
+  }
+});
+
 test("rejects malformed status IPC data without rendering it", async () => {
   mockInvoke.mockImplementation(async (command: string) => {
     if (command === "credential_statuses") {

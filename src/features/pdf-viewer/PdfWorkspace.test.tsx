@@ -80,15 +80,15 @@ async function runCancellationScenario(
     getViewport: vi.fn(() => ({ width: 612, height: 792 })),
   } as unknown as PDFPageProxy;
 
-  openMock.mockResolvedValue(descriptor);
-  closeMock.mockResolvedValue(undefined);
-  readMock.mockImplementation(() => {
+  openMock.mockResolvedValueOnce(descriptor);
+  closeMock.mockResolvedValueOnce(undefined);
+  readMock.mockImplementationOnce(() => {
     if (phase === "read") {
       return readDeferred.promise;
     }
     return Promise.resolve(bytes);
   });
-  loadMock.mockImplementation(() => {
+  loadMock.mockImplementationOnce(() => {
     if (phase === "read") {
       throw new Error("UNEXPECTED_LOAD");
     }
@@ -98,7 +98,7 @@ async function runCancellationScenario(
     return Promise.resolve(handle);
   });
   if (phase === "page enumeration") {
-    getPage.mockImplementation((pageNumber) => {
+    getPage.mockImplementationOnce((pageNumber) => {
       if (pageNumber !== 1) {
         throw new Error(`UNEXPECTED_PAGE_${pageNumber}`);
       }
@@ -142,8 +142,18 @@ async function runCancellationScenario(
 
   expect(closeMock).toHaveBeenCalledTimes(1);
   expect(closeMock).toHaveBeenCalledWith(descriptor.documentSessionId);
+  expect(openMock).toHaveBeenCalledOnce();
+  expect(openMock).toHaveBeenCalledWith();
+  expect(readMock).toHaveBeenCalledTimes(1);
+  expect(readMock).toHaveBeenCalledWith(descriptor.documentSessionId);
   expect(loadMock).toHaveBeenCalledTimes(phase === "read" ? 0 : 1);
+  if (phase !== "read") {
+    expect(loadMock).toHaveBeenCalledWith(bytes);
+  }
   expect(getPage).toHaveBeenCalledTimes(phase === "page enumeration" ? 1 : 0);
+  if (phase === "page enumeration") {
+    expect(getPage).toHaveBeenCalledWith(1);
+  }
   expect(destroy).toHaveBeenCalledTimes(phase === "read" ? 0 : 1);
 
   if (action === "close") {
@@ -185,7 +195,7 @@ describe.each<CancellationAction>(["close", "unmount"])(
 
 test("cancelled native picker preserves the current document lifecycle", async () => {
   const onDocumentSessionChange = vi.fn();
-  openMock.mockResolvedValue(null);
+  openMock.mockResolvedValueOnce(null);
   const { result, unmount } = renderHook(() =>
     usePdfWorkspaceController({ onDocumentSessionChange }),
   );
@@ -194,6 +204,10 @@ test("cancelled native picker preserves the current document lifecycle", async (
     await result.current.open();
   });
 
+  expect(openMock).toHaveBeenCalledOnce();
+  expect(openMock).toHaveBeenCalledWith();
+  expect(readMock).not.toHaveBeenCalled();
+  expect(loadMock).not.toHaveBeenCalled();
   expect(onDocumentSessionChange).not.toHaveBeenCalled();
   expect(result.current.descriptor).toBeNull();
   expect(closeMock).not.toHaveBeenCalled();
@@ -206,14 +220,15 @@ test("accepted document and explicit close synchronously publish session changes
   const page = {
     getViewport: vi.fn(() => ({ width: 612, height: 792 })),
   } as unknown as PDFPageProxy;
+  const getPage = vi.fn().mockResolvedValueOnce(page);
   const document = {
     numPages: 1,
-    getPage: vi.fn().mockResolvedValue(page),
+    getPage,
   } as unknown as PDFDocumentProxy;
-  openMock.mockResolvedValue(descriptor);
-  readMock.mockResolvedValue(bytes);
-  loadMock.mockResolvedValue({ document, destroy });
-  closeMock.mockResolvedValue(undefined);
+  openMock.mockResolvedValueOnce(descriptor);
+  readMock.mockResolvedValueOnce(bytes);
+  loadMock.mockResolvedValueOnce({ document, destroy });
+  closeMock.mockResolvedValueOnce(undefined);
   const { result, unmount } = renderHook(() =>
     usePdfWorkspaceController({ onDocumentSessionChange }),
   );
@@ -226,6 +241,14 @@ test("accepted document and explicit close synchronously publish session changes
     1,
     descriptor.documentSessionId,
   );
+  expect(openMock).toHaveBeenCalledOnce();
+  expect(openMock).toHaveBeenCalledWith();
+  expect(readMock).toHaveBeenCalledOnce();
+  expect(readMock).toHaveBeenCalledWith(descriptor.documentSessionId);
+  expect(loadMock).toHaveBeenCalledOnce();
+  expect(loadMock).toHaveBeenCalledWith(bytes);
+  expect(getPage).toHaveBeenCalledOnce();
+  expect(getPage).toHaveBeenCalledWith(1);
   expect(result.current.descriptor).toEqual(descriptor);
 
   await act(async () => {
@@ -235,6 +258,7 @@ test("accepted document and explicit close synchronously publish session changes
   expect(onDocumentSessionChange).toHaveBeenCalledTimes(2);
   expect(result.current.descriptor).toBeNull();
   expect(closeMock).toHaveBeenCalledOnce();
+  expect(closeMock).toHaveBeenCalledWith(descriptor.documentSessionId);
   expect(destroy).toHaveBeenCalledOnce();
   unmount();
 });

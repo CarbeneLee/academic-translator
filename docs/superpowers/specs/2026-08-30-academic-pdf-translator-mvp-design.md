@@ -165,6 +165,8 @@ The settings view contains:
 
 After saving, a full secret must not be returned to the WebView. A configured DeepSeek key may be represented as a derived hint such as sk-••••••••A9f2. There is no reveal-full-secret action. Entering a new value replaces the stored value; the input and frontend state are cleared immediately after a successful save.
 
+Rust authoritatively limits every credential to 4096 Unicode scalar values. Each frontend credential input mirrors that boundary with `maxLength=4096` UTF-16 code units; the frontend may therefore reject an astral-character value before it reaches Rust.
+
 ## 5. Selection Limits and Token Budgets
 
 All counts operate on normalized selected text.
@@ -481,6 +483,7 @@ The App Secret never enters the frontend provider code and is never logged.
 - Source code and repository configuration contain no production credentials.
 - Environment files are ignored except an explicit example file.
 - Secret values implement redacted debug behavior in Rust.
+- Credential values above 4096 Unicode scalar values are rejected and the rejected owned input is zeroized before the stable invalid-credential error is returned.
 - HTTP headers and form bodies are not logged.
 - Errors are mapped before crossing IPC.
 - Saving a credential clears the frontend input.
@@ -548,6 +551,7 @@ Cache failure is non-fatal. Translation continues without caching.
 - Connect timeout: 5 seconds.
 - Youdao total timeout: 20 seconds.
 - DeepSeek total timeout: 45 seconds.
+- DeepSeek and Youdao response bodies have one shared cumulative 262144-byte maximum, enforced while chunks are read even when response length is unknown.
 - Only a connection failure known to occur before a request is successfully sent may be retried automatically once.
 - Do not automatically retry HTTP 401, 403, 429, validation errors, malformed responses, or ambiguous timeouts.
 - User-driven retry creates a new request ID.

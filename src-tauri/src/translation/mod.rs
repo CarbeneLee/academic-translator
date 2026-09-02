@@ -223,6 +223,34 @@ mod tests {
     }
 
     #[test]
+    fn chooses_the_same_priority_boundary_nearest_to_the_2500_character_target() {
+        let source = format!(
+            "{} {} {}",
+            "a".repeat(2_399),
+            "b".repeat(200),
+            "c".repeat(2_000)
+        );
+        let prepared = prepare_translation(&[fragment(0, &source)]).unwrap();
+
+        assert_eq!(prepared.chunks[0].text.chars().count(), 2_400);
+        assert_eq!(reconstructed_text(&prepared), source);
+    }
+
+    #[test]
+    fn equidistant_same_priority_boundaries_choose_the_earlier_cut() {
+        let source = format!(
+            "{} {} {}",
+            "a".repeat(2_399),
+            "b".repeat(199),
+            "c".repeat(2_000)
+        );
+        let prepared = prepare_translation(&[fragment(0, &source)]).unwrap();
+
+        assert_eq!(prepared.chunks[0].text.chars().count(), 2_400);
+        assert_eq!(reconstructed_text(&prepared), source);
+    }
+
+    #[test]
     fn hard_splits_pathological_unicode_text_without_splitting_utf8() {
         let source = "🧪".repeat(7_001);
         let prepared = prepare_translation(&[fragment(0, &source)]).unwrap();

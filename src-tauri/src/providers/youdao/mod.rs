@@ -22,6 +22,7 @@ use crate::{
 };
 
 use self::{response::parse_response, signing::sign_v3};
+use super::response_body::read_bounded_response_body;
 
 pub const YOUDAO_TRANSLATION_URL: &str = "https://openapi.youdao.com/api";
 pub const YOUDAO_MODEL_ID: &str = "youdao-text-translation";
@@ -199,18 +200,7 @@ impl TranslationProvider for YoudaoProvider {
         };
 
         map_http_status(response.status())?;
-        let body = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => return Err(AppError::request_cancelled()),
-            result = tokio::time::timeout_at(deadline, response.bytes()) => {
-                match result {
-                    Ok(Ok(body)) => body,
-                    Ok(Err(error)) if error.is_timeout() => return Err(AppError::request_timeout()),
-                    Ok(Err(_)) => return Err(AppError::network_unavailable(false)),
-                    Err(_) => return Err(AppError::request_timeout()),
-                }
-            }
-        };
+        let body = read_bounded_response_body(response, deadline, &cancellation).await?;
 
         Ok(ProviderResult {
             provider: self.provider_id(),
