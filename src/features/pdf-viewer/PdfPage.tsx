@@ -50,6 +50,21 @@ function flushCanvasPaint(canvas: HTMLCanvasElement): void {
   }
 }
 
+function configureTextLayerScale(
+  textLayer: HTMLElement,
+  scale: number,
+  userUnit: number,
+): void {
+  textLayer.style.setProperty("--scale-factor", String(scale));
+  textLayer.style.setProperty("--user-unit", String(userUnit));
+  textLayer.style.setProperty(
+    "--total-scale-factor",
+    "calc(var(--scale-factor) * var(--user-unit))",
+  );
+  textLayer.style.setProperty("--scale-round-x", "1px");
+  textLayer.style.setProperty("--scale-round-y", "1px");
+}
+
 function renderedTextSpans(textLayer: HTMLElement): HTMLSpanElement[] {
   return Array.from(
     textLayer.querySelectorAll<HTMLSpanElement>('span[role="presentation"]'),
@@ -147,6 +162,7 @@ export function PdfPage({
       canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+      configureTextLayerScale(textLayerElement, scale, page.userUnit);
       setLayerDimensions(textLayerElement, viewport);
 
       canvasTask = page.render({

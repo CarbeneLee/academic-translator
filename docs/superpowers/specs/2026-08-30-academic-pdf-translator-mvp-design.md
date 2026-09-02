@@ -94,7 +94,11 @@ The left rail must not contain inactive placeholders for notes, chat, or other p
 ### 4.2 Selection Behavior
 
 - A normal selection replaces the current selection set.
+- A plain left-button press in the PDF reading surface clears the current
+  selection before an ordinary replacement drag. A click without a drag leaves
+  the selection cleared.
 - Holding Alt while selecting appends a fragment.
+- Alt+left-button press retains the current fragments for additive capture.
 - A fragment records its document-session ID, addition order, selected text, and one or more page-local text-layer spans.
 - Added fragments are combined in the order the user added them.
 - Fragment boundaries become paragraph separators.
@@ -126,9 +130,18 @@ The fragment stores a stable fragment ID, document-session ID, and addition orde
 
 Text-layer anchors are the persistent source of truth. Viewport rectangles are derived rendering data, not persistent selection identity. When a page mounts again, the zoom level changes, or PDF.js rebuilds a text layer, highlight rectangles are recomputed from the stored anchors.
 
+Persistent highlight rectangles are derived from item-local Ranges for each
+tagged PDF.js text item. A page-local span must not be reconstructed as one
+cross-item Range because browser client rectangles may bridge unselected PDF
+columns. The custom PDF.js host must also provide scale-factor, user-unit,
+total-scale-factor, and scale-round CSS variables so the transparent text layer
+stays aligned with the rendered canvas.
+
 State transitions are fixed:
 
 - A non-Alt capture replaces all prior SelectionFragment state and highlights.
+- A plain left-button press clears prior fragments and highlights before an
+  ordinary capture; if no drag follows, they remain cleared.
 - An Alt capture appends one fragment and retains earlier application-owned highlights.
 - Page virtualization may hide a highlight but must not delete its fragment state.
 - Zoom and page rerender must preserve fragments and recompute visible highlights.

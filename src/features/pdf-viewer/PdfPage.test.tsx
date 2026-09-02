@@ -93,6 +93,7 @@ test("renders PDF canvas and text layer when async stream iteration is unavailab
   const releaseLock = vi.fn();
   const onTextLayerRendered = vi.fn();
   const page = {
+    userUnit: 1.5,
     getViewport: () => ({ width: 600, height: 800 }),
     render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
     getTextContent,
@@ -105,7 +106,7 @@ test("renders PDF canvas and text layer when async stream iteration is unavailab
     <PdfPage
       page={page}
       pageIndex={0}
-      scale={1}
+      scale={1.25}
       documentSessionId="document-session-1"
       highlightRects={[]}
       onTextLayerRendered={onTextLayerRendered}
@@ -120,6 +121,13 @@ test("renders PDF canvas and text layer when async stream iteration is unavailab
   expect(releaseLock).toHaveBeenCalledOnce();
   expect(getImageData).toHaveBeenCalledWith(0, 0, 1, 1);
   const textLayer = onTextLayerRendered.mock.calls[0]?.[1] as HTMLElement;
+  expect(textLayer.style.getPropertyValue("--scale-factor")).toBe("1.25");
+  expect(textLayer.style.getPropertyValue("--user-unit")).toBe("1.5");
+  expect(textLayer.style.getPropertyValue("--total-scale-factor")).toBe(
+    "calc(var(--scale-factor) * var(--user-unit))",
+  );
+  expect(textLayer.style.getPropertyValue("--scale-round-x")).toBe("1px");
+  expect(textLayer.style.getPropertyValue("--scale-round-y")).toBe("1px");
   expect(textLayer).toHaveAttribute("data-selection-supported", "true");
   expect(textLayer.querySelectorAll('span[role="presentation"]')).toHaveLength(
     2,

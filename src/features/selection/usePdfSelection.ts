@@ -137,9 +137,24 @@ export function usePdfSelection({
       selection.removeAllRanges();
     };
 
+    const clearOwnedSelectionOnPlainMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || event.altKey || fragments.length === 0) {
+        return;
+      }
+      clearSelection();
+    };
+
+    root.addEventListener("mousedown", clearOwnedSelectionOnPlainMouseDown);
     root.addEventListener("mouseup", captureCurrentRange);
-    return () => root.removeEventListener("mouseup", captureCurrentRange);
+    return () => {
+      root.removeEventListener(
+        "mousedown",
+        clearOwnedSelectionOnPlainMouseDown,
+      );
+      root.removeEventListener("mouseup", captureCurrentRange);
+    };
   }, [
+    clearSelection,
     documentSessionId,
     fragments,
     onSelectionChange,

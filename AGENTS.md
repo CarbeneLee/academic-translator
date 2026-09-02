@@ -98,7 +98,12 @@ Do not add inactive note, chat, OCR, or AI-workbench placeholders.
 ## Selection Semantics
 
 - A normal selection replaces the current selection set.
+- A plain left-button press in the PDF reading surface clears the current
+  selection set before any new ordinary drag; a click without a drag leaves it
+  cleared.
 - Holding Alt appends a fragment.
+- Alt+left-button press must retain the current selection set for additive
+  capture.
 - Alt fragments may span columns or pages.
 - Preserve user-addition order.
 - Join fragments with paragraph separators.
@@ -126,9 +131,15 @@ After mouseup, convert the current Range into application-owned SelectionFragmen
 
 Persistent highlights must be application-rendered from stored anchors and independent of the browser's current DOM Selection. Recompute visible highlight geometry after zoom, page remount, or PDF.js text-layer rerender. Page virtualization must not delete fragment state. Ordinary replacement selection, Escape, PDF close, and document-session replacement must update fragment state and highlights together.
 
+Reconstruct persistent highlight geometry with item-local Ranges for each
+tagged PDF.js text item. Do not create one cross-item Range for an entire
+page-local span because its client rectangles can bridge unselected columns.
+
 ## PDF Rules
 
 - Treat the PDF.js text layer as the authoritative source of selectable text.
+- Configure the PDF.js text-layer scale, user-unit, total-scale, and scale-round
+  CSS variables so its hit testing and geometry remain aligned with the canvas.
 - Open PDF files read-only.
 - Never mutate or rewrite the underlying PDF.
 - Never copy the entire PDF into the application cache.

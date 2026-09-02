@@ -96,6 +96,74 @@ test("normal mouseup replaces while Alt mouseup appends without translating", ()
   expect(onTranslate).not.toHaveBeenCalled();
 });
 
+test("plain left-button down clears the owned selection before another drag", () => {
+  const { root, layer, textNodes } = buildPdfDom();
+  const originalCreateRange = document.createRange.bind(document);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = originalCreateRange();
+    Object.defineProperty(range, "getClientRects", {
+      value: () => [
+        {
+          left: 4,
+          top: 6,
+          width: 20,
+          height: 10,
+          right: 24,
+          bottom: 16,
+          x: 4,
+          y: 6,
+          toJSON: () => undefined,
+        },
+      ],
+    });
+    return range;
+  });
+  const { result } = renderHook(() =>
+    usePdfSelection({
+      rootRef: rootRef(root),
+      documentSessionId: sessionId,
+      scale: 1,
+      onTranslate: vi.fn(),
+    }),
+  );
+  act(() => result.current.registerTextLayer(0, layer));
+  select(textNodes[0]);
+  fireEvent.mouseUp(root);
+  expect(result.current.fragments).toHaveLength(1);
+  expect(result.current.highlightRects).toHaveLength(1);
+
+  fireEvent.mouseDown(root, { button: 0 });
+
+  expect(result.current.fragments).toEqual([]);
+  expect(result.current.highlightRects).toEqual([]);
+
+  select(textNodes[0]);
+  fireEvent.mouseUp(root);
+
+  expect(result.current.fragments).toHaveLength(1);
+  expect(result.current.highlightRects).toHaveLength(1);
+});
+
+test("Alt+left-button down preserves owned fragments for additive selection", () => {
+  const { root, textNodes } = buildPdfDom();
+  const { result } = renderHook(() =>
+    usePdfSelection({
+      rootRef: rootRef(root),
+      documentSessionId: sessionId,
+      scale: 1,
+      onTranslate: vi.fn(),
+    }),
+  );
+  select(textNodes[0]);
+  fireEvent.mouseUp(root);
+
+  fireEvent.mouseDown(root, { button: 0, altKey: true });
+
+  expect(result.current.fragments.map((fragment) => fragment.text)).toEqual([
+    "alpha",
+  ]);
+});
+
 test("selection mutations synchronously publish the owned fragments before any translation", () => {
   const { root, textNodes } = buildPdfDom();
   const onSelectionChange = vi.fn();
