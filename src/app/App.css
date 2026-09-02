@@ -12,6 +12,7 @@ body {
   margin: 0;
   min-width: 1000px;
   min-height: 640px;
+  overflow: hidden;
 }
 
 button {
@@ -23,7 +24,8 @@ button {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr) 360px;
   grid-template-rows: 48px minmax(0, 1fr) 28px;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background: #edf0f3;
 }
 
@@ -191,9 +193,7 @@ button {
 }
 
 .floatingTranslateAction {
-  position: absolute;
-  right: 24px;
-  bottom: 24px;
+  position: fixed;
   z-index: 3;
   min-width: 72px;
   height: 36px;

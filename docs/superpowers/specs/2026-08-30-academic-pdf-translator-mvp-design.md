@@ -102,7 +102,9 @@ The left rail must not contain inactive placeholders for notes, chat, or other p
 - The application must not infer or attach surrounding sentences.
 - Every selected fragment is translation input, not hidden context.
 - Changing the selection does not call a provider automatically.
-- A floating translation button appears after a non-empty selection stabilizes.
+- A floating translation button appears beside the latest visible fragment after
+  a non-empty selection stabilizes and repositions after scrolling, zooming, or
+  viewport resizing.
 - Cmd+Enter triggers translation on macOS.
 - Ctrl+Enter triggers translation on Windows.
 - Escape clears the selection or cancels the current request, depending on focus and request state.

@@ -11,6 +11,7 @@ import {
   captureRange,
   type UnsupportedSelectionError,
 } from "./captureRange";
+import { deriveFloatingActionPosition } from "./floatingActionPosition";
 import { deriveHighlightRects } from "./highlightGeometry";
 import {
   emptySelectionState,
@@ -56,6 +57,7 @@ export function usePdfSelection({
     emptySelectionState,
   );
   const [textLayerRevision, setTextLayerRevision] = useState(0);
+  const [viewportRevision, setViewportRevision] = useState(0);
   const textLayerByPageRef = useRef(new Map<number, HTMLElement>());
   const fragmentSequenceRef = useRef(0);
   const previousDocumentSessionRef = useRef(documentSessionId);
@@ -167,7 +169,37 @@ export function usePdfSelection({
     root.addEventListener("textlayerrendered", refreshRenderedLayer);
     return () =>
       root.removeEventListener("textlayerrendered", refreshRenderedLayer);
-  }, [rootRef]);
+  }, [documentSessionId, rootRef]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    const refreshViewportGeometry = () => {
+      setViewportRevision((revision) => revision + 1);
+    };
+    root.addEventListener("scroll", refreshViewportGeometry, {
+      passive: true,
+    });
+    window.addEventListener("scroll", refreshViewportGeometry, {
+      capture: true,
+      passive: true,
+    });
+    window.addEventListener("resize", refreshViewportGeometry);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(refreshViewportGeometry);
+    resizeObserver?.observe(root);
+    return () => {
+      root.removeEventListener("scroll", refreshViewportGeometry);
+      window.removeEventListener("scroll", refreshViewportGeometry, true);
+      window.removeEventListener("resize", refreshViewportGeometry);
+      resizeObserver?.disconnect();
+    };
+  }, [documentSessionId, rootRef]);
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -214,10 +246,21 @@ export function usePdfSelection({
     () => deriveHighlightRects(fragments, textLayerByPageRef.current),
     [fragments, scale, textLayerRevision],
   );
+  const floatingActionPosition = useMemo(() => {
+    const root = rootRef.current;
+    return root
+      ? deriveFloatingActionPosition(
+          highlightRects,
+          textLayerByPageRef.current,
+          root,
+        )
+      : { left: 12, top: 12 };
+  }, [highlightRects, rootRef, viewportRevision]);
 
   return {
     fragments,
     highlightRects,
+    floatingActionPosition,
     clearSelection,
     registerTextLayer,
   };

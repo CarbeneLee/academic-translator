@@ -96,6 +96,25 @@ function selectText(text: string): void {
   selection.addRange(range);
 }
 
+function domRect(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+): DOMRect {
+  return {
+    x: left,
+    y: top,
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    toJSON: () => undefined,
+  } as DOMRect;
+}
+
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
 });
@@ -137,6 +156,70 @@ test("workspace mouse capture stays local until the explicit floating action", (
       ],
     },
   ]);
+});
+
+test("workspace anchors the floating action beside the selection and repositions it on scroll and zoom", () => {
+  const originalCreateRange = document.createRange.bind(document);
+  let selectedRect = domRect(240, 160, 40, 20);
+  vi.spyOn(document, "createRange").mockImplementation(() => {
+    const range = originalCreateRange();
+    Object.defineProperty(range, "getClientRects", {
+      value: () => [selectedRect],
+    });
+    return range;
+  });
+
+  const onTranslate = vi.fn();
+  const view = render(
+    <PdfWorkspace
+      controller={controller({ descriptor: null, pdfDocument: null, pages: [] })}
+      onTranslate={onTranslate}
+    />,
+  );
+  view.rerender(
+    <PdfWorkspace controller={controller()} onTranslate={onTranslate} />,
+  );
+  const pdfRoot = view.container.querySelector<HTMLElement>(
+    ".pdfPagesViewport",
+  );
+  const textLayer = view.container.querySelector<HTMLElement>(".pdfTextLayer");
+  if (!pdfRoot || !textLayer) {
+    throw new Error("expected PDF viewport and text layer");
+  }
+
+  vi.spyOn(pdfRoot, "getBoundingClientRect").mockReturnValue(
+    domRect(100, 50, 800, 600),
+  );
+  let textLayerRect = domRect(200, 100, 612, 792);
+  vi.spyOn(textLayer, "getBoundingClientRect").mockImplementation(
+    () => textLayerRect,
+  );
+
+  selectText("alpha");
+  fireEvent.mouseUp(pdfRoot);
+
+  const action = screen.getByRole("button", { name: "翻译所选文本" });
+  expect(action).toHaveStyle({ left: "208px", top: "188px" });
+
+  textLayerRect = domRect(200, 40, 612, 792);
+  fireEvent.scroll(pdfRoot);
+
+  expect(action).toHaveStyle({ left: "208px", top: "128px" });
+
+  textLayerRect = domRect(200, -20, 612, 792);
+  fireEvent.scroll(window);
+
+  expect(action).toHaveStyle({ left: "208px", top: "68px" });
+
+  selectedRect = domRect(260, 220, 40, 20);
+  view.rerender(
+    <PdfWorkspace
+      controller={controller({ scale: 2 })}
+      onTranslate={onTranslate}
+    />,
+  );
+
+  expect(action).toHaveStyle({ left: "228px", top: "248px" });
 });
 
 test("workspace keeps Alt captures discrete and clears them on document close", () => {

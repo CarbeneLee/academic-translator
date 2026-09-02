@@ -375,6 +375,7 @@ test("floating action forwards only the application-owned fragments", () => {
   const view = render(
     <FloatingTranslateAction
       fragments={result.current.fragments}
+      position={{ left: 12, top: 12 }}
       onTranslate={onTranslate}
     />,
   );
@@ -399,6 +400,7 @@ test("floating action remains visible but disabled while translation is active",
   render(
     <FloatingTranslateAction
       fragments={selected}
+      position={{ left: 12, top: 12 }}
       onTranslate={vi.fn()}
       disabled
     />,

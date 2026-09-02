@@ -528,6 +528,7 @@ export function PdfWorkspace({
       </div>
       <FloatingTranslateAction
         fragments={selection.fragments}
+        position={selection.floatingActionPosition}
         onTranslate={onTranslate}
         disabled={isRequestActive}
       />
