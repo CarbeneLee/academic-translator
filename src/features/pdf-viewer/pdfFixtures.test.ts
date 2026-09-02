@@ -1,7 +1,7 @@
 import {
   getDocument,
   type PDFDocumentProxy,
-} from "pdfjs-dist";
+} from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import { tagTextLayer } from "./PdfPage";
 
