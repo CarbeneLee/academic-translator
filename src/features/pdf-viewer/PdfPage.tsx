@@ -4,12 +4,51 @@ import {
   TextLayer,
   type PDFPageProxy,
 } from "pdfjs-dist";
-import type { TextItem } from "pdfjs-dist/types/src/display/api";
+import type {
+  TextContent,
+  TextItem,
+} from "pdfjs-dist/types/src/display/api";
 import { SelectionHighlights } from "../selection/SelectionHighlights";
 import type { HighlightRect } from "../selection/highlightGeometry";
 import "pdfjs-dist/web/pdf_viewer.css";
 
 const UNSUPPORTED_TEXT_MESSAGE = "此页面没有可用的文本层，无法选择文本。";
+
+async function readTextContent(page: PDFPageProxy): Promise<TextContent> {
+  // PDF.js getTextContent() uses async ReadableStream iteration, which is not
+  // available in every WKWebView. Its reader API is supported by both engines.
+  const reader = page.streamTextContent().getReader();
+  const textContent: TextContent = {
+    items: [],
+    styles: Object.create(null) as TextContent["styles"],
+    lang: null,
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        return textContent;
+      }
+
+      const chunk = value as TextContent;
+      textContent.lang ??= chunk.lang;
+      Object.assign(textContent.styles, chunk.styles);
+      textContent.items.push(...chunk.items);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function flushCanvasPaint(canvas: HTMLCanvasElement): void {
+  try {
+    canvas.getContext("2d")?.getImageData(0, 0, 1, 1);
+  } catch {
+    // WKWebView needs a synchronous canvas read to commit some PDF.js paints.
+    // If pixel reads are unavailable, the completed render remains valid.
+  }
+}
 
 function renderedTextSpans(textLayer: HTMLElement): HTMLSpanElement[] {
   return Array.from(
@@ -118,7 +157,7 @@ export function PdfPage({
             ? undefined
             : [outputScale, 0, 0, outputScale, 0, 0],
       });
-      const textContent = await page.getTextContent();
+      const textContent = await readTextContent(page);
       if (disposed) {
         return;
       }
@@ -132,6 +171,8 @@ export function PdfPage({
       if (disposed) {
         return;
       }
+
+      flushCanvasPaint(canvas);
 
       const textItems = textContent.items.filter(
         (item): item is TextItem => "str" in item,

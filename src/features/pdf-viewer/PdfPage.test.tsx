@@ -1,8 +1,40 @@
-import type { TextItem } from "pdfjs-dist/types/src/display/api";
-import { tagTextLayer } from "./PdfPage";
+import { render, waitFor } from "@testing-library/react";
+import type {
+  PDFPageProxy,
+  TextContent,
+  TextItem,
+} from "pdfjs-dist/types/src/display/api";
+import { PdfPage, tagTextLayer } from "./PdfPage";
 
 vi.mock("pdfjs-dist", () => ({
-  TextLayer: class {},
+  setLayerDimensions: vi.fn(),
+  TextLayer: class {
+    readonly container: HTMLElement;
+    readonly textContentSource: TextContent;
+
+    constructor({
+      container,
+      textContentSource,
+    }: {
+      container: HTMLElement;
+      textContentSource: TextContent;
+    }) {
+      this.container = container;
+      this.textContentSource = textContentSource;
+    }
+
+    render() {
+      for (const item of this.textContentSource.items) {
+        if (!("str" in item) || item.str.length === 0) {
+          continue;
+        }
+        this.container.append(renderedSpan());
+      }
+      return Promise.resolve();
+    }
+
+    cancel() {}
+  },
 }));
 
 function textItem(str: string, hasEOL = false): TextItem {
@@ -22,6 +54,78 @@ function renderedSpan(): HTMLSpanElement {
   span.setAttribute("role", "presentation");
   return span;
 }
+
+test("renders PDF canvas and text layer when async stream iteration is unavailable in WKWebView", async () => {
+  const chunks: TextContent[] = [
+    {
+      items: [textItem("alpha")],
+      styles: {
+        sans: {
+          fontFamily: "sans-serif",
+          ascent: 0.8,
+          descent: -0.2,
+          vertical: false,
+        },
+      },
+      lang: "en",
+    },
+    {
+      items: [textItem("beta")],
+      styles: {},
+      lang: null,
+    },
+  ];
+  let chunkIndex = 0;
+  const read = vi.fn(async () => {
+    const value = chunks[chunkIndex];
+    chunkIndex += 1;
+    return value === undefined
+      ? { done: true as const, value: undefined }
+      : { done: false as const, value };
+  });
+  const getTextContent = vi.fn().mockRejectedValue(
+    new TypeError("ReadableStream is not async iterable"),
+  );
+  const getImageData = vi.fn();
+  const getContext = vi
+    .spyOn(HTMLCanvasElement.prototype, "getContext")
+    .mockReturnValue({ getImageData } as unknown as CanvasRenderingContext2D);
+  const releaseLock = vi.fn();
+  const onTextLayerRendered = vi.fn();
+  const page = {
+    getViewport: () => ({ width: 600, height: 800 }),
+    render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+    getTextContent,
+    streamTextContent: () => ({
+      getReader: () => ({ read, releaseLock }),
+    }),
+  } as unknown as PDFPageProxy;
+
+  render(
+    <PdfPage
+      page={page}
+      pageIndex={0}
+      scale={1}
+      documentSessionId="document-session-1"
+      highlightRects={[]}
+      onTextLayerRendered={onTextLayerRendered}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(onTextLayerRendered).toHaveBeenCalledWith(0, expect.any(HTMLElement));
+  });
+  expect(getTextContent).not.toHaveBeenCalled();
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(releaseLock).toHaveBeenCalledOnce();
+  expect(getImageData).toHaveBeenCalledWith(0, 0, 1, 1);
+  const textLayer = onTextLayerRendered.mock.calls[0]?.[1] as HTMLElement;
+  expect(textLayer).toHaveAttribute("data-selection-supported", "true");
+  expect(textLayer.querySelectorAll('span[role="presentation"]')).toHaveLength(
+    2,
+  );
+  getContext.mockRestore();
+});
 
 test("tags rendered text spans with stable page and source-item indices", () => {
   const textLayer = document.createElement("div");
