@@ -131,8 +131,9 @@ impl TranslationProvider for DeepseekProvider {
             result = tokio::time::timeout_at(deadline, outbound.send()) => {
                 match result {
                     Ok(Ok(response)) => response,
-                    Ok(Err(error)) if error.is_timeout() => return Err(AppError::request_timeout()),
-                    Ok(Err(error)) => return Err(AppError::network_unavailable(error.is_connect())),
+                    Ok(Err(error)) => {
+                        return Err(map_transport_failure(error.is_timeout(), error.is_connect()))
+                    }
                     Err(_) => return Err(AppError::request_timeout()),
                 }
             }
@@ -148,6 +149,14 @@ impl TranslationProvider for DeepseekProvider {
             translation,
             usage,
         })
+    }
+}
+
+fn map_transport_failure(is_timeout: bool, is_connect: bool) -> AppError {
+    if is_timeout {
+        AppError::request_timeout()
+    } else {
+        AppError::network_unavailable(is_connect)
     }
 }
 

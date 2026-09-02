@@ -1,4 +1,4 @@
-use std::{net::TcpListener, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use rstest::rstest;
@@ -20,6 +20,7 @@ use crate::{
 };
 
 use super::{
+    map_transport_failure,
     prompt::{translation_schema, CANONICAL_PROMPT_ACADEMIC_ZH_V1},
     request::build_request,
     DeepseekProvider,
@@ -400,27 +401,20 @@ async fn never_follows_a_provider_redirect_to_an_unapproved_endpoint() {
         .is_empty());
 }
 
-#[tokio::test]
-async fn marks_a_refused_connection_as_a_known_pre_send_failure() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}/responses", listener.local_addr().unwrap());
-    drop(listener);
-    let provider = DeepseekProvider::for_test(
-        Arc::new(DeepseekSecretStore::with_key("test-key")),
-        endpoint,
-        Duration::from_millis(500),
-    )
-    .unwrap();
+#[rstest]
+#[case(false, true, "NETWORK_UNAVAILABLE", true)]
+#[case(false, false, "NETWORK_UNAVAILABLE", false)]
+#[case(true, true, "REQUEST_TIMEOUT", false)]
+fn maps_transport_failures_without_environment_dependent_sockets(
+    #[case] is_timeout: bool,
+    #[case] is_connect: bool,
+    #[case] expected_code: &str,
+    #[case] expected_pre_send: bool,
+) {
+    let error = map_transport_failure(is_timeout, is_connect);
 
-    let error = timeout(
-        Duration::from_secs(1),
-        provider.translate(passage("A result."), CancellationToken::new()),
-    )
-    .await
-    .expect("connection-failure test exceeded its hard bound")
-    .unwrap_err();
-    assert_eq!(error.code(), "NETWORK_UNAVAILABLE");
-    assert!(error.is_connection_before_send());
+    assert_eq!(error.code(), expected_code);
+    assert_eq!(error.is_connection_before_send(), expected_pre_send);
 }
 
 #[tokio::test]
